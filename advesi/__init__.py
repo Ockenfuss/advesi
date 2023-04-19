@@ -149,9 +149,16 @@ class Trajectory_Collection(object):
         self.x=x
         self.y=y
         self.z=z
+    
+    def concat(self, other: Trajectory_Collection):
+        x=xr.concat([self.x, other.x], dim='T').sortby('T')
+        y=xr.concat([self.y, other.y], dim='T').sortby('T')
+        z=xr.concat([self.z, other.z], dim='T').sortby('T')
+        return Trajectory_Collection(x,y,z)
+
 
     @classmethod
-    def from_flowfield(cls, flowfield: FlowField_Collection,x0:np.ndarray | float , y0: np.ndarray | float, z0: np.ndarray | float, dt: float, steps, savesteps=1, interp=False):
+    def from_flowfield(cls, flowfield: FlowField_Collection,x0:np.ndarray | float , y0: np.ndarray | float, z0: np.ndarray | float, dt: float, steps, steps_backward=0, savesteps=1, interp=False):
         x0=np.array(x0).flatten()
         y0=np.array(y0).flatten()
         z0=np.array(z0).flatten()
@@ -181,7 +188,13 @@ class Trajectory_Collection(object):
                     Xi=Xi+flowfield.u.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop(["x","y","z"])*dt
                     Yi=Yi+flowfield.v.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop(["x","y","z"])*dt
                     Zi=Zi+flowfield.w.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop(["x","y","z"])*dt
-        return cls(X,Y,Z)
+        forward=cls(X,Y,Z)
+        if steps_backward>0:
+            backward=cls.from_flowfield(flowfield, x0, y0, z0, -1*dt, steps=steps_backward, savesteps=savesteps, interp=interp)
+            backward=cls(backward.x.drop_sel(T=0.0),backward.y.drop_sel(T=0.0),backward.z.drop_sel(T=0.0))
+            forward=forward.concat(backward)
+        return forward
+
 
 class Path_Collection(object):
     def __init__(self, x,y,z):
@@ -328,6 +341,8 @@ class Field_Collection(object):
         particle_property=particle_property.groupby('index_n')
         if aggregation=='max':
             particle_property=particle_property.max()
+        elif aggregation=='min':
+            particle_property=particle_property.min()
         elif aggregation=='mean':
             particle_property=particle_property.mean()
         elif aggregation=='median':
@@ -338,11 +353,3 @@ class Field_Collection(object):
         particle_property=particle_property.where(particle_property.index_n>=0, drop=True)
         property_index_x, property_index_y, property_index_z, property_index_ft=unravel_index(particle_property.index_n, nix, niy, niz, nit)
         self.f[{"x":property_index_x,"y":property_index_y, "z":property_index_z, "t":property_index_ft}]=particle_property.values
-
-
-
-class Birdbath_Collection(object):
-    def __init__(self) -> None:
-        # self.moment=
-        pass
-
