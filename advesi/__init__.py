@@ -116,9 +116,6 @@ class Particle_Collection(object):
         field_selectors={k:flatten_da(da) for k,da in field_selectors.items()}
         self.field_selectors=field_selectors
 
-    @classmethod
-    def from_doppler_birdbath_collection(cls, bb_coll: Birdbath_Collection):
-        return cls(bb_coll.xr, bb_coll.yr, bb_coll.moment.z, bb_coll.moment.t, bb_coll.moment, field_selectors={'w':bb_coll.moment})
     
     @classmethod
     def from_field_collection(cls, field_coll: Field_Collection, field_selectors: Dict[str, xr.DataArray]={}):
@@ -255,7 +252,7 @@ class Path_Collection(object):
 
 class Field_Collection(object):
     def __init__(self, f) -> None:
-        if not {'x', 'y', 'z', 't'}==set(f.dims):
+        if not {'x', 'y', 'z', 't'}<=set(f.dims):
             raise DimensionError("A field collection must have dimensions 'x', 'y', 'z' and 't'.")
         self.f=f.sortby(['x', 'y', 'z', 't'])
         self.index_x=xr.DataArray(np.arange(len(f.x)), coords=[('x', f.x.values)])
@@ -347,6 +344,8 @@ class Field_Collection(object):
             particle_property=particle_property.mean()
         elif aggregation=='median':
             particle_property=particle_property.median()
+        elif aggregation=='sum':
+            particle_property=particle_property.sum()
         else:
             raise ValueError(f"Aggregation '{aggregation}' is currently not implemented.")
         #remove the group, which contains all invalid spatio-temporal particle positions
