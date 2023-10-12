@@ -178,13 +178,13 @@ class Trajectory_Collection(object):
             Z[{"T":iT}]=Zi
             for it in range(savesteps):
                 if interp:
-                    Xi=Xi+flowfield.u.interp(x=Xi, y=Yi, z=Zi, kwargs={'fill_value':None}).drop(["x","y","z"])*dt
-                    Yi=Yi+flowfield.v.interp(x=Xi, y=Yi, z=Zi, kwargs={'fill_value':None}).drop(["x","y","z"])*dt
-                    Zi=Zi+flowfield.w.interp(x=Xi, y=Yi, z=Zi, kwargs={'fill_value':None}).drop(["x","y","z"])*dt
+                    Xi=Xi+flowfield.u.interp(x=Xi, y=Yi, z=Zi, kwargs={'fill_value':None}).drop_vars(["x","y","z"])*dt
+                    Yi=Yi+flowfield.v.interp(x=Xi, y=Yi, z=Zi, kwargs={'fill_value':None}).drop_vars(["x","y","z"])*dt
+                    Zi=Zi+flowfield.w.interp(x=Xi, y=Yi, z=Zi, kwargs={'fill_value':None}).drop_vars(["x","y","z"])*dt
                 else:
-                    Xi=Xi+flowfield.u.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop(["x","y","z"])*dt
-                    Yi=Yi+flowfield.v.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop(["x","y","z"])*dt
-                    Zi=Zi+flowfield.w.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop(["x","y","z"])*dt
+                    Xi=Xi+flowfield.u.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop_vars(["x","y","z"])*dt
+                    Yi=Yi+flowfield.v.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop_vars(["x","y","z"])*dt
+                    Zi=Zi+flowfield.w.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop_vars(["x","y","z"])*dt
         forward=cls(X,Y,Z)
         if steps_backward>0:
             backward=cls.from_flowfield(flowfield, x0, y0, z0, -1*dt, steps=steps_backward, savesteps=savesteps, interp=interp)
@@ -276,7 +276,7 @@ class Field_Collection(object):
         return indexes_positions
     
     @classmethod
-    def create_regular(cls, times: np.ndarray, xlim: tuple, ylim: tuple, zlim: tuple, nx=100, ny=100, nz=100):
+    def create_regular(cls, times: np.ndarray, xlim: tuple, ylim: tuple, zlim: tuple, nx=100, ny=100, nz=100, fill_value=np.nan):
         #create field axes, big enough to hold all paths completely
         x=np.linspace(xlim[0], xlim[1], nx)
         x=xr.DataArray(x, coords=[('x', x)])
@@ -287,7 +287,7 @@ class Field_Collection(object):
         #Time axis is given as argument
         ft=times.flatten()
         ft=xr.DataArray(ft, coords=[('t', ft)])
-        field_da=xr.full_like(xr.broadcast(x,y,z,ft)[0],fill_value=np.nan)
+        field_da=xr.full_like(xr.broadcast(x,y,z,ft)[0],fill_value=fill_value)
         field=cls(field_da)
         return field
 
