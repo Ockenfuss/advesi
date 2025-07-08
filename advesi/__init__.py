@@ -82,15 +82,76 @@ class FlowField_Collection(object):
 
     
     def _add_missing_dimensions(self,da: xr.DataArray):
-        """If one of x,y,z is missing in the input velocity components, add it as a coordinate from -advesi.FIELD_BOUNDARY to advesi.FIELD_BOUNDARY."""
-        for d in ["x", "y","z"]:
+        """If one of x,y,z,t is missing in the input velocity components, add it as a coordinate from -advesi.FIELD_BOUNDARY to advesi.FIELD_BOUNDARY."""
+        for d in ["x", "y","z", "t"]:
             if d not in da.dims:
                 coord=xr.DataArray([-FIELD_BOUNDARY, FIELD_BOUNDARY], coords=[(d, [-FIELD_BOUNDARY, FIELD_BOUNDARY])])
                 da=da.broadcast_like(coord)
         return da
     
     def _broadcast_array_to_field(self,da):
-        return _broadcast_like_list(da, self.u, self.v, self.w, exclude=["x", "y","z"])
+        return _broadcast_like_list(da, self.u, self.v, self.w, exclude=["x", "y","z", "t"])
+    
+    def _get_nearest(self, x, y, z, t):
+        u=self.u.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
+        v=self.v.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
+        w=self.w.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
+        return u,v,w
+    
+    def _get_interp(self, x, y, z, t):
+        u=self.u.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
+        v=self.v.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
+        w=self.w.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
+        return u,v,w
+
+    def get_values(self, x, y, z, t, method='nearest'):
+        if method=='nearest':
+            return self._get_nearest(x, y, z, t)
+        elif method=='interpolate':
+            return self._get_interp(x, y, z, t)
+        else:
+            raise KeyError(f"Method '{method}' not available. Use 'nearest' or 'interpolate'.")
+    
+def advect(flowfield : FlowField_Collection, x0, y0, z0, t0, dt, steps, savesteps=None, interp_method='interpolate'):
+        # T=np.arange(0,steps*dt, dt*savesteps)
+        # T=xr.DataArray(T,coords=[('T', T)])
+        if savesteps is None:
+            savesteps=steps
+        if savesteps<2:
+            raise ValueError("savesteps must be at least 2")
+        if steps<savesteps:
+            raise ValueError("steps must be at least savesteps")
+        intermediate_interval=int(steps/savesteps)
+        it=np.arange(0, savesteps)
+        it=xr.DataArray(it, coords=[('it', it)])
+        X,Y,Z,T,_=xr.broadcast(x0,y0,z0,t0, it)
+        X=flowfield._broadcast_array_to_field(X).copy()
+        Y=flowfield._broadcast_array_to_field(Y).copy()
+        Z=flowfield._broadcast_array_to_field(Z).copy()
+        T=flowfield._broadcast_array_to_field(T).copy()
+        Xi=X.isel(it=0).copy().drop_vars("it") #current positions in iteration scheme
+        Yi=Y.isel(it=0).copy().drop_vars("it")
+        Zi=Z.isel(it=0).copy().drop_vars("it")
+        Ti=T.isel(it=0).copy().drop_vars("it")
+
+        for save_it in range(len(it)):
+            X[{"it":save_it}]=Xi
+            Y[{"it":save_it}]=Yi
+            Z[{"it":save_it}]=Zi
+            T[{"it":save_it}]=Ti
+            for intermediate_it in range(intermediate_interval):
+                u,v,w= flowfield.get_values(Xi, Yi, Zi, Ti, method=interp_method)
+                Xi=Xi+u*dt
+                Yi=Yi+v*dt
+                Zi=Zi+w*dt
+                Ti=Ti+dt
+        return X,Y,Z,T
+        # forward=cls(X,Y,Z)
+        # if steps_backward>0:
+        #     backward=cls.from_flowfield(flowfield, x0, y0, z0, -1*dt, steps=steps_backward, savesteps=savesteps, interp=interp)
+        #     backward=cls(backward.x.drop_sel(T=0.0),backward.y.drop_sel(T=0.0),backward.z.drop_sel(T=0.0))
+        #     forward=forward.concat(backward)
+        # return forward
         
 
 class Particle_Collection(object):
@@ -123,119 +184,94 @@ class Particle_Collection(object):
         
 
 class Trajectory_Collection(object):
-    def __init__(self, x,y,z) -> None:
+    def __init__(self, ds_trajectories: xr.Dataset) -> None:
         """Create a collection of trajectories. Currently, trajectory collections are not allowed to be completely unstructured, but rather the starting points must form a regular grid.
         This choice facilitates lookups of trajectories and allows for interpolation to arbitrary points collections.
 
         Parameters
         ----------
-        x : xr.DataArray
-            x coordinate of the trajectories. Must have coordinates 'x0', 'y0', 'z0' and T, where T is the time relative to the starting position.
-        y : xr.DataArray
-            y coordinate of the trajectories. Must have coordinates 'x0', 'y0', 'z0' and T, where T is the time relative to the starting position.
-        z : xr.DataArray
-            z coordinate of the trajectories. Must have coordinates 'x0', 'y0', 'z0' and T, where T is the time relative to the starting position.
+        ds_trajectories : xr.Dataset
+            Dataset with coordinates of the trajectories. Must have variables x,y,z and coordinates 'x0', 'y0', 'z0' and T, where T is the time relative to the starting position.
         """
-        for d in [x,y,z]:
-            if not {'x0', 'y0', 'z0', 'T'} <= set(d.coords.keys()):
+        if not {'x', 'y', 'z'} == set(ds_trajectories.data_vars.keys()):
+            raise DimensionError("Trajectory collections must have variables 'x', 'y', 'z'.")
+        if not {'x0', 'y0', 'z0', 'T'} <= set(ds_trajectories.coords.keys()):
                 raise DimensionError("Trajectories must have 'x0', 'y0', 'z0', 'T' coordinates.")
-        for d in ['x0', 'y0', 'z0', 'T']: #TODO: This check is incomplete. In theory, x,y,z must be able to form one commont DataArray
-            if not (x[d].equals(y[d]) and x[d].equals(z[d])):
-                raise DimensionError(f"Coordinate {d} is not equal on all of the given arrays!")
-        self.T=x.T
-        self.x=x
-        self.y=y
-        self.z=z
+        self.ds=ds_trajectories
     
     def concat(self, other: Trajectory_Collection):
-        x=xr.concat([self.x, other.x], dim='T').sortby('T')
-        y=xr.concat([self.y, other.y], dim='T').sortby('T')
-        z=xr.concat([self.z, other.z], dim='T').sortby('T')
-        return Trajectory_Collection(x,y,z)
+        ds=xr.concat([self.ds, other.ds], dim='T').sortby('T')
+        return Trajectory_Collection(ds)
 
 
     @classmethod
-    def from_flowfield(cls, flowfield: FlowField_Collection,x0:np.ndarray | float , y0: np.ndarray | float, z0: np.ndarray | float, dt: float, steps, steps_backward=0, savesteps=1, interp=False):
+    def from_flowfield(cls, flowfield: FlowField_Collection,x0:np.ndarray | float , y0: np.ndarray | float, z0: np.ndarray | float, dt: float, steps, steps_backward=0, savesteps=None, interp_method='nearest'):
         x0=np.array(x0).flatten()
         y0=np.array(y0).flatten()
         z0=np.array(z0).flatten()
         x0=xr.DataArray(x0, coords=[('x0',x0)])
         y0=xr.DataArray(y0, coords=[('y0',y0)])
         z0=xr.DataArray(z0, coords=[('z0',z0)])
-        T=np.arange(0,steps*dt, dt*savesteps)
-        T=xr.DataArray(T,coords=[('T', T)])
-        X,Y,Z,_=xr.broadcast(x0,y0,z0,T)
-        X=flowfield._broadcast_array_to_field(X).copy()
-        Y=flowfield._broadcast_array_to_field(Y).copy()
-        Z=flowfield._broadcast_array_to_field(Z).copy()
-        Xi=X.isel(T=0).copy().drop_vars("T") #current positions in iteration scheme
-        Yi=Y.isel(T=0).copy().drop_vars("T")
-        Zi=Z.isel(T=0).copy().drop_vars("T")
-
-        for iT in range(len(T)):
-            X[{"T":iT}]=Xi
-            Y[{"T":iT}]=Yi
-            Z[{"T":iT}]=Zi
-            for it in range(savesteps):
-                if interp:
-                    Xi=Xi+flowfield.u.interp(x=Xi, y=Yi, z=Zi, kwargs={'fill_value':None}).drop_vars(["x","y","z"])*dt
-                    Yi=Yi+flowfield.v.interp(x=Xi, y=Yi, z=Zi, kwargs={'fill_value':None}).drop_vars(["x","y","z"])*dt
-                    Zi=Zi+flowfield.w.interp(x=Xi, y=Yi, z=Zi, kwargs={'fill_value':None}).drop_vars(["x","y","z"])*dt
-                else:
-                    Xi=Xi+flowfield.u.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop_vars(["x","y","z"])*dt
-                    Yi=Yi+flowfield.v.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop_vars(["x","y","z"])*dt
-                    Zi=Zi+flowfield.w.sel(x=Xi, y=Yi, z=Zi, method='nearest').drop_vars(["x","y","z"])*dt
-        forward=cls(X,Y,Z)
-        if steps_backward>0:
-            backward=cls.from_flowfield(flowfield, x0, y0, z0, -1*dt, steps=steps_backward, savesteps=savesteps, interp=interp)
-            backward=cls(backward.x.drop_sel(T=0.0),backward.y.drop_sel(T=0.0),backward.z.drop_sel(T=0.0))
-            forward=forward.concat(backward)
-        return forward
+        t0=xr.DataArray([0.0], coords=[('t0', [0.0])])
+        X,Y,Z,T=advect(flowfield, x0, y0, z0, t0, dt, steps, savesteps, interp_method=interp_method) #result: [x0, y0, z0, it]
+        # check if all particles have the same time
+        #this should be the case for simple euler advection, but may not be fulfilled for more complex advection schemes
+        min_t=T.min(dim=[d for d in T.dims if d!='it'])
+        max_t=T.max(dim=[d for d in T.dims if d!='it'])
+        if abs(min_t-max_t).any()>1e-6:
+            raise ValueError("All particles must follow the same time evolution in a trajectory collection.")
+        #now, we can add absolute time coordinates to the time index dimension
+        times=T.isel({d:0 for d in T.dims if d!='it'}) #take the first time, since all times are equal
+        ds_trajectories=xr.Dataset({'x': X, 'y': Y, 'z': Z})
+        ds_trajectories.coords['it']=('it', times.values)
+        ds_trajectories=ds_trajectories.rename(it='T').drop_vars('t0') 
+        return Trajectory_Collection(ds_trajectories)
 
 
 class Path_Collection(object):
-    def __init__(self, x,y,z):
-        for d in [x,y,z]:
-            if not {'n', 't'}==set(d.dims):
-                raise DimensionError("Path Collection fields have only dimensions 'n' and 't' allowed.")
-        valid=np.logical_and(x.notnull(), y.notnull())
-        valid=np.logical_and(valid, z.notnull())
-        self.x=x.where(valid)
-        self.y=y.where(valid)
-        self.z=z.where(valid)
+    def __init__(self, ds):
+        if not {'x', 'y', 'z', 't'} <= set(ds.data_vars.keys()):
+            raise DimensionError("Path collections must have variables 'x', 'y', 'z', 't'.")
+        if not {'n', 'it'}==set(ds.dims):
+            raise DimensionError(f"Path Collection dataset has only dimensions 'n' and 'it' allowed. Dimensions are {ds.dims}.")
+        valid=ds.notnull()
+        reduced=np.logical_and(valid.x, valid.y)
+        reduced=np.logical_and(reduced, valid.z)
+        reduced=np.logical_and(reduced, valid.t)
+        self.ds=ds.where(reduced)
         
 
     @classmethod
-    def from_particle_collection(cls, particle_coll: Particle_Collection, trajectory_coll: Trajectory_Collection, t: np.ndarray, matching: str='hybrid'):
+    def from_trajectory_collection(cls, particle_coll: Particle_Collection, trajectory_coll: Trajectory_Collection, t: np.ndarray, matching: str='hybrid'):
         t=np.array(t).flatten()
         t=xr.DataArray(t, coords=[('t', t)])
         T=t-particle_coll.t0 #relative time
         if matching=='exact':
             selector=particle_coll.field_selectors | {'T':T, 'x0': particle_coll.x0, 'y0':particle_coll.y0, 'z0':particle_coll.z0}
-            x=trajectory_coll.x.sel(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
-            y=trajectory_coll.y.sel(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
-            z=trajectory_coll.z.sel(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
-            return cls(x,y,z)
+            ds=trajectory_coll.ds.sel(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
         elif matching=='interpolate':
             #Known bugs: interpolations do not work if we have only one value along a dimension.
             #Solution: implement interpolation only on >1 dimensions
             if 1 in trajectory_coll.x.shape:
                 raise DimensionError("Interpolation matching is currently not working if any of the dimensions has length one.")
             selector=particle_coll.field_selectors | {'T':T, 'x0': particle_coll.x0, 'y0':particle_coll.y0, 'z0':particle_coll.z0}
-            x=trajectory_coll.x.interp(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
-            y=trajectory_coll.y.interp(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
-            z=trajectory_coll.z.interp(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
-            return cls(x,y,z)
+            ds=trajectory_coll.ds.interp(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
         elif matching=='hybrid': #select initial location exactly, interpolate time and additional selectors like fallspeed
             #TODO: After selection, the array has dimensions [n,T,...]. Therefore, the 'n' is interpolated again in the interpolation.
             #Currently, there seems to be no way in xarray to to a hybrid (partly exact, partly interpolate) selection in one go
             interpolation_selector=particle_coll.field_selectors | {'T':T} 
-            x=trajectory_coll.x.sel(x0=particle_coll.x0,y0=particle_coll.y0, z0=particle_coll.z0).squeeze(drop=True).interp(interpolation_selector).drop_vars(['x0', 'y0', 'z0', 'T'], errors='ignore') #squeeze out 'n' if it has length one, since otherwise, the interpolation in 'n' will fail
-            y=trajectory_coll.y.sel(x0=particle_coll.x0,y0=particle_coll.y0, z0=particle_coll.z0).squeeze(drop=True).interp(interpolation_selector).drop_vars(['x0', 'y0', 'z0', 'T'], errors='ignore')
-            z=trajectory_coll.z.sel(x0=particle_coll.x0,y0=particle_coll.y0, z0=particle_coll.z0).squeeze(drop=True).interp(interpolation_selector).drop_vars(['x0', 'y0', 'z0', 'T'], errors='ignore')
-            return cls(x,y,z)
+            ds=trajectory_coll.ds.sel(x0=particle_coll.x0,y0=particle_coll.y0, z0=particle_coll.z0).squeeze(drop=True).interp(interpolation_selector).drop_vars(['x0', 'y0', 'z0', 'T'], errors='ignore') #squeeze out 'n' if it has length one, since otherwise, the interpolation in 'n' will fail
         else:
             raise KeyError(f"Matching '{matching}' not available.")
+        ds=ds.rename(t='it') #here, coordinates are actually absolute times, but path collections are more general and just require a general time index 'it'
+        ds['t']=ds.it.broadcast_like(ds.x)
+        return cls(ds)
+    
+    @classmethod
+    def from_field_collection(cls, particle_coll: Particle_Collection, field_coll: Field_Collection, t: np.ndarray, matching: str='hybrid'):
+        """Create a path collection from initial particle positions and a field collection.
+            In this case, the fields can be time dependent and the paths are calculated explicitly for each particle. For stationary fields, it is probably more efficient to calculate trajectories first and then create the path collection from the trajectory collection.
+        """
 
 
     @classmethod
@@ -243,10 +279,10 @@ class Path_Collection(object):
         part_coll=Particle_Collection.from_doppler_birdbath_collection(bb_coll)
         if t is None:
             t=bb_coll.moment.t
-        return cls.from_particle_collection(part_coll, traj_coll,t)
+        return cls.from_trajectory_collection(part_coll, traj_coll,t)
     
     def get_valid_mask(self):
-        valid=self.x.notnull() #it is enough to check x, since by construction we equalize nans between x,y,z
+        valid=self.ds.x.notnull() #it is enough to check x, since by construction we equalize nans between x,y,z
         return valid
 
 
@@ -255,25 +291,60 @@ class Field_Collection(object):
         if not {'x', 'y', 'z', 't'}<=set(f.dims):
             raise DimensionError("A field collection must have dimensions 'x', 'y', 'z' and 't'.")
         self.f=f.sortby(['x', 'y', 'z', 't'])
-        self.index_x=xr.DataArray(np.arange(len(f.x)), coords=[('x', f.x.values)])
-        self.index_y=xr.DataArray(np.arange(len(f.y)), coords=[('x', f.y.values)])
-        self.index_z=xr.DataArray(np.arange(len(f.z)), coords=[('x', f.z.values)])
-        self.index_ft=xr.DataArray(np.arange(len(f.t)), coords=[('t', f.t.values)])
+        ix=xr.DataArray(np.arange(len(f.x)), coords=[('x', f.x.values)])
+        iy=xr.DataArray(np.arange(len(f.y)), coords=[('y', f.y.values)])
+        iz=xr.DataArray(np.arange(len(f.z)), coords=[('z', f.z.values)])
+        it=xr.DataArray(np.arange(len(f.t)), coords=[('t', f.t.values)])
+        ny=len(f.y)
+        nz=len(f.z)
+        nt=len(f.t)
+        # unique id for every cell in the field
+        self.id=ix*ny*nz*nt + iy*nz*nt + iz*nt + it
+    
+    def unravel_index(self, ind:xr.DataArray):
+        """xarray wrapper around np.unravel_index with C style order."""
+        nx=len(self.f.x)
+        ny=len(self.f.y)
+        nz=len(self.f.z)
+        nt=len(self.f.t)
+        unravel=lambda da: np.unravel_index(da, shape=(nx, ny, nz, nt), order='C')
+        indx, indy, indz, indt=xr.apply_ufunc(unravel, ind, output_core_dims=[[],[],[], []])
+        return indx, indy, indz, indt
+    
+    def _out_of_field(self, positions: xr.Dataset):
+        """Check if the given positions are out of the field."""
+        x=positions.x
+        y=positions.y
+        z=positions.z
+        t=positions.t
+        xmin, xmax = self.f.x.min(), self.f.x.max()
+        ymin, ymax = self.f.y.min(), self.f.y.max()
+        zmin, zmax = self.f.z.min(), self.f.z.max()
+        tmin, tmax = self.f.t.min(), self.f.t.max()
+        out_of_range= (x<xmin) | (x>xmax) | (y<ymin) | (y>ymax) | (z<zmin) | (z>zmax) | (t<tmin) | (t>tmax)
+        return out_of_range
 
     
-    def _get_index_for_values(self, values: xr.DataArray, indexes: xr.DataArray):
-        coordname=indexes.dims[0]
-        #check if values are within bounds of given index mapping
-        assert(values.min()>=indexes[coordname].min())
-        assert(values.max()<=indexes[coordname].max())
-        #create an additional index '-1' in the index array outside the range of given values
-        invalid_position=indexes[coordname].min().item()-1.0
-        indexes=xr.concat([indexes, xr.DataArray([-1], coords=[(coordname, [invalid_position])])], dim=coordname).sortby(coordname)
-        #fill nan values with the invalid value, pointing to index '-1'
-        values=values.fillna(invalid_position)
-        #for every position, look for the corresponding index
-        indexes_positions=indexes.sel({coordname:values}, method='ffill')
-        return indexes_positions
+    def _get_id(self, positions: xr.Dataset):
+        """Given a Dataset with positions as variables x,y,z,t, find the id of the corresponding field cells."""
+        x=positions.x
+        y=positions.y
+        z=positions.z
+        t=positions.t
+        xmin, xmax = self.f.x.min(), self.f.x.max()
+        ymin, ymax = self.f.y.min(), self.f.y.max()
+        zmin, zmax = self.f.z.min(), self.f.z.max()
+        tmin, tmax = self.f.t.min(), self.f.t.max()
+        out_of_range= (x<xmin) | (x>xmax) | (y<ymin) | (y>ymax) | (z<zmin) | (z>zmax) | (t<tmin) | (t>tmax)
+        x=positions.x.clip(xmin, xmax)
+        y=positions.y.clip(ymin, ymax)
+        z=positions.z.clip(zmin, zmax) 
+        t=positions.t.clip(tmin, tmax)
+        id=self.id.sel(x=x, y=y, z=z, t=t, method='ffill')
+        id=id.where(~out_of_range, other=-1)
+        return id
+        
+
     
     @classmethod
     def create_regular(cls, times: np.ndarray, xlim: tuple, ylim: tuple, zlim: tuple, nx=100, ny=100, nz=100, fill_value=np.nan):
@@ -293,49 +364,24 @@ class Field_Collection(object):
 
     @classmethod
     def from_particle_collection(cls, part_coll: Particle_Collection, traj_coll: Trajectory_Collection, times: np.ndarray, nx=100, ny=100, nz=100, aggregation='max'):
-        path_coll=Path_Collection.from_particle_collection(part_coll, traj_coll, times)
-        xlim=(path_coll.x.min().item(), path_coll.x.max().item())
-        ylim=(path_coll.y.min().item(), path_coll.y.max().item())
-        zlim=(path_coll.z.min().item(), path_coll.z.max().item())
+        path_coll=Path_Collection.from_trajectory_collection(part_coll, traj_coll, times)
+        ds_min=path_coll.ds.min()
+        ds_max=path_coll.ds.max()
+        xlim=(ds_min.x.item(), ds_max.x.item())
+        ylim=(ds_min.y.item(), ds_max.y.item())
+        zlim=(ds_min.z.item(), ds_max.z.item())
         f=cls.create_regular(times, xlim, ylim, zlim, nx, ny, nz)
         f.fill_with(part_coll, path_coll, aggregation)
         return f
 
     def fill_with(self, part_coll: Particle_Collection, path_coll: Path_Collection, aggregation='max'):
         #set all positions outside of the field to invalid values
-        isinfield=  (path_coll.x>=self.f.x.min()) & (path_coll.x<=self.f.x.max()) & \
-                    (path_coll.y>=self.f.y.min()) & (path_coll.y<=self.f.y.max()) & \
-                    (path_coll.z>=self.f.z.min()) & (path_coll.z<=self.f.z.max()) & \
-                    (path_coll.x.t>=self.f.t.min()) & (path_coll.x.t<=self.f.t.max())
-        valid=path_coll.get_valid_mask()
-        #For every position in the path collection, find the corresponding index in the field
-        particle_index_x=self._get_index_for_values(path_coll.x.where(isinfield), self.index_x)
-        particle_index_y=self._get_index_for_values(path_coll.y.where(isinfield), self.index_y)
-        particle_index_z=self._get_index_for_values(path_coll.z.where(isinfield), self.index_z)
-        path_times=path_coll.x.t.where(valid) #time is not a variable, but an axis. This will broadcast it and set to nan where the positions are invalid
-        particle_index_ft=self._get_index_for_values(path_times.where(isinfield), self.index_ft)
-
-        nix=len(self.index_x)
-        niy=len(self.index_y)
-        niz=len(self.index_z)
-        nit=len(self.index_ft)
-
-        def ravel_multi_index(ix, iy, iz, it, nx, ny, nz, nt):
-            """Ravel index in C style order. In contrast to np.ravel_multi_index, this function does not raise an error for negative indices."""
-            return ix*ny*nz*nt+iy*nz*nt+iz*nt+it
-        def unravel_index(ind:xr.DataArray, nx, ny, nz, nt):
-            """xarray wrapper around np.unravel_index with C style order."""
-            unravel=lambda da: np.unravel_index(da, shape=(nx, ny, nz, nt), order='C')
-            indx, indy, indz, indt=xr.apply_ufunc(unravel, ind, output_core_dims=[[],[],[], []])
-            return indx, indy, indz, indt
-
-        #create a combined index for every spation-temporal index
-        index_n=ravel_multi_index(particle_index_x, particle_index_y, particle_index_z, particle_index_ft, nix, niy, niz, nit)
+        id=self._get_id(path_coll.ds)
 
         #Add the combined index as a multi index to the particle property field and use groupby
-        particle_property=part_coll.property.broadcast_like(path_coll.x.t) #add the time dimension
-        particle_property.coords["index_n"]=(index_n.dims, index_n.values)
-        particle_property=particle_property.groupby('index_n')
+        particle_property=part_coll.property.broadcast_like(path_coll.ds) #add the time dimension
+        particle_property.coords["id"]=(id.dims, id.values)
+        particle_property=particle_property.groupby('id')
         if aggregation=='max':
             particle_property=particle_property.max()
         elif aggregation=='min':
@@ -349,6 +395,6 @@ class Field_Collection(object):
         else:
             raise ValueError(f"Aggregation '{aggregation}' is currently not implemented.")
         #remove the group, which contains all invalid spatio-temporal particle positions
-        particle_property=particle_property.where(particle_property.index_n>=0, drop=True)
-        property_index_x, property_index_y, property_index_z, property_index_ft=unravel_index(particle_property.index_n, nix, niy, niz, nit)
+        particle_property=particle_property.where(particle_property.id>=0, drop=True)
+        property_index_x, property_index_y, property_index_z, property_index_ft=self.unravel_index(particle_property.id)
         self.f[{"x":property_index_x,"y":property_index_y, "z":property_index_z, "t":property_index_ft}]=particle_property.values
