@@ -5,6 +5,11 @@ import xarray as xr
 
 FIELD_BOUNDARY=1e10
 
+def broadcast_dim_only(*arrays: xr.DataArray):
+    """Broadcast arrays only by dimensions, raising an error if their coordinates do not match."""
+    aligned_arrays = xr.align(*arrays, join='exact')
+    return xr.broadcast(*aligned_arrays)
+
 def _broadcast_like_list(da: xr.DataArray, *args: xr.DataArray, exclude=None):
     """Broadcast a given array to multiple others.
     Currently, this is a workaround since xr.DataArray.broadcast_like(other) does not support other to be a list of Arrays."""
@@ -37,15 +42,18 @@ class DimensionError(Exception):
 
 class FlowField_Collection(object):
     def __init__(self, u,v,w):
-        u=xr.DataArray(u)
-        v=xr.DataArray(v)
-        w=xr.DataArray(w)
+        u=xr.DataArray(u).astype(float).squeeze(drop=True) #remove 1D dimensions and add them as -Boundary to +Boundary again
+        v=xr.DataArray(v).astype(float).squeeze(drop=True)
+        w=xr.DataArray(w).astype(float).squeeze(drop=True)
+        for da in [u,v,w]:
+            for d in ['u', 'v', 'w']:
+                if d in da.dims:
+                    raise DimensionError(f"FlowField_Collection is not allowed to have a '{d}' dimension, since this name will be used for the variable '{d}' in the internal dataset.")
+        u,v,w=broadcast_dim_only(u,v,w)
         u=self._add_missing_dimensions(u)
         v=self._add_missing_dimensions(v)
         w=self._add_missing_dimensions(w)
-        self.u=u
-        self.v=v
-        self.w=w
+        self.ds= xr.Dataset({'u': u, 'v': v, 'w': w})
 
     @classmethod
     def from_doppler_birdbath_collection(cls, bb_coll: Birdbath_Collection, u, v, w_points=100):
@@ -90,19 +98,19 @@ class FlowField_Collection(object):
         return da
     
     def _broadcast_array_to_field(self,da):
-        return _broadcast_like_list(da, self.u, self.v, self.w, exclude=["x", "y","z", "t"])
+        return _broadcast_like_list(da, self.ds.u, self.ds.v, self.ds.w, exclude=["x", "y","z", "t"])
     
     def _get_nearest(self, x, y, z, t):
-        u=self.u.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
-        v=self.v.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
-        w=self.w.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
-        return u,v,w
+        # u=self.u.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
+        # v=self.v.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
+        # w=self.w.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
+        return self.ds.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
     
     def _get_interp(self, x, y, z, t):
-        u=self.u.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
-        v=self.v.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
-        w=self.w.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
-        return u,v,w
+        # u=self.u.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
+        # v=self.v.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
+        # w=self.w.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
+        return self.ds.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
 
     def get_values(self, x, y, z, t, method='nearest'):
         if method=='nearest':
@@ -112,60 +120,79 @@ class FlowField_Collection(object):
         else:
             raise KeyError(f"Method '{method}' not available. Use 'nearest' or 'interpolate'.")
     
-def advect(flowfield : FlowField_Collection, x0, y0, z0, t0, dt, steps, savesteps=None, interp_method='interpolate'):
-        # T=np.arange(0,steps*dt, dt*savesteps)
-        # T=xr.DataArray(T,coords=[('T', T)])
+    def __repr__(self):
+        return self.ds.__repr__()
+
+class Advector(object):
+    def __init__(self):
+        """Advector class to advect particles in a flow field."""
+        pass
+class EulerAdvector(Advector):
+    def __init__(self, dt, steps, steps_backward=0, savesteps=None, interp_method='interpolate'):
+        self.dt= dt
+        total_steps=steps+steps_backward
         if savesteps is None:
-            savesteps=steps
+            savesteps=total_steps
         if savesteps<2:
             raise ValueError("savesteps must be at least 2")
-        if steps<savesteps:
+        if total_steps<savesteps:
             raise ValueError("steps must be at least savesteps")
-        intermediate_interval=int(steps/savesteps)
-        it=np.arange(0, savesteps)
-        it=xr.DataArray(it, coords=[('it', it)])
-        X,Y,Z,T,_=xr.broadcast(x0,y0,z0,t0, it)
-        X=flowfield._broadcast_array_to_field(X).copy()
-        Y=flowfield._broadcast_array_to_field(Y).copy()
-        Z=flowfield._broadcast_array_to_field(Z).copy()
-        T=flowfield._broadcast_array_to_field(T).copy()
-        Xi=X.isel(it=0).copy().drop_vars("it") #current positions in iteration scheme
-        Yi=Y.isel(it=0).copy().drop_vars("it")
-        Zi=Z.isel(it=0).copy().drop_vars("it")
-        Ti=T.isel(it=0).copy().drop_vars("it")
+        intermediate_interval=int(total_steps/savesteps)
+        self.steps_forward=int(steps/total_steps*savesteps)
+        self.steps_backward=int(steps_backward/total_steps*savesteps)
+        self.intermediate_interval=intermediate_interval
+        self.interp_method=interp_method
 
-        for save_it in range(len(it)):
-            X[{"it":save_it}]=Xi
-            Y[{"it":save_it}]=Yi
-            Z[{"it":save_it}]=Zi
-            T[{"it":save_it}]=Ti
-            for intermediate_it in range(intermediate_interval):
-                u,v,w= flowfield.get_values(Xi, Yi, Zi, Ti, method=interp_method)
-                Xi=Xi+u*dt
-                Yi=Yi+v*dt
-                Zi=Zi+w*dt
-                Ti=Ti+dt
-        return X,Y,Z,T
-        # forward=cls(X,Y,Z)
-        # if steps_backward>0:
-        #     backward=cls.from_flowfield(flowfield, x0, y0, z0, -1*dt, steps=steps_backward, savesteps=savesteps, interp=interp)
-        #     backward=cls(backward.x.drop_sel(T=0.0),backward.y.drop_sel(T=0.0),backward.z.drop_sel(T=0.0))
-        #     forward=forward.concat(backward)
-        # return forward
+    def _forward(self, flowfield : FlowField_Collection, x0, y0, z0, t0, dt, save_steps, intermediate_interval):
+            it=np.sign(save_steps)*np.arange(0, abs(save_steps))
+            it=xr.DataArray(it, coords=[('it', it)])
+            X,Y,Z,T,_=broadcast_dim_only(x0,y0,z0,t0, it)
+            X=flowfield._broadcast_array_to_field(X).copy()
+            Y=flowfield._broadcast_array_to_field(Y).copy()
+            Z=flowfield._broadcast_array_to_field(Z).copy()
+            T=flowfield._broadcast_array_to_field(T).copy()
+            Xi=X.isel(it=0).copy().drop_vars("it") #current positions in iteration scheme
+            Yi=Y.isel(it=0).copy().drop_vars("it")
+            Zi=Z.isel(it=0).copy().drop_vars("it")
+            Ti=T.isel(it=0).copy().drop_vars("it")
+
+            for save_it in range(len(it)):
+                X[{"it":save_it}]=Xi
+                Y[{"it":save_it}]=Yi
+                Z[{"it":save_it}]=Zi
+                T[{"it":save_it}]=Ti
+                for intermediate_it in range(intermediate_interval):
+                    ds= flowfield.get_values(Xi, Yi, Zi, Ti, method=self.interp_method)
+                    Xi=Xi+ds.u*dt
+                    Yi=Yi+ds.v*dt
+                    Zi=Zi+ds.w*dt
+                    Ti=Ti+dt
+            return X,Y,Z,T
+    
+    def advect(self, flowfield : FlowField_Collection, x0, y0, z0, t0):
+            Xf,Yf,Zf,Tf=self._forward(flowfield, x0, y0, z0, t0, self.dt, self.steps_forward, self.intermediate_interval)
+            if self.steps_backward>0:
+                Xb,Yb,Zb,Tb=self._forward(flowfield, x0, y0, z0, t0, -self.dt, -self.steps_backward, self.intermediate_interval)
+                Xf=xr.concat([Xb.drop_sel(it=0), Xf], dim='it').sortby('it')
+                Yf=xr.concat([Yb.drop_sel(it=0), Yf], dim='it').sortby('it')
+                Zf=xr.concat([Zb.drop_sel(it=0), Zf], dim='it').sortby('it')
+                Tf=xr.concat([Tb.drop_sel(it=0), Tf], dim='it').sortby('it')
+            return Xf, Yf, Zf, Tf
+
         
 
 class Particle_Collection(object):
     def __init__(self, x0: float | xr.DataArray, y0: float | xr.DataArray, z0: float | xr.DataArray, t0: float | xr.DataArray, property: float | xr.DataArray, field_selectors: Dict[str, xr.DataArray]={}):
-        x0=xr.DataArray(x0)
-        y0=xr.DataArray(y0)
-        z0=xr.DataArray(z0)
-        t0=xr.DataArray(t0)
-        property=xr.DataArray(property)
+        x0=xr.DataArray(x0).astype(float)
+        y0=xr.DataArray(y0).astype(float)
+        z0=xr.DataArray(z0).astype(float)
+        t0=xr.DataArray(t0).astype(float)
+        property=xr.DataArray(property).astype(float)
         field_selectors={k:xr.DataArray(v) for k,v in field_selectors.items()}
         #first, broadcast all given arrays
         select_keys=list(field_selectors.keys())
         select_arrays=list(field_selectors.values())
-        x0,y0,z0,t0,property,*select_arrays=xr.broadcast(x0,y0,z0,t0,property,*select_arrays)
+        x0,y0,z0,t0,property,*select_arrays=broadcast_dim_only(x0,y0,z0,t0,property,*select_arrays)
         field_selectors=dict(zip(select_keys, select_arrays))
         #flatten all arrays
         #TODO: Maybe, we can use numpy from here on, since flattened, the multidimensional capabilities of xarray are not necessary
@@ -181,8 +208,13 @@ class Particle_Collection(object):
     @classmethod
     def from_field_collection(cls, field_coll: Field_Collection, field_selectors: Dict[str, xr.DataArray]={}):
         return cls(field_coll.f.x, field_coll.f.y, field_coll.f.z, field_coll.f.t, property=field_coll.f, field_selectors=field_selectors)
+    
+    def to_path_collection(self):
+        """Convert the particle collection to a path collection with only the initial positions"""
+        ds=xr.Dataset({'x': self.x0, 'y': self.y0, 'z': self.z0, 't': self.t0})
+        ds=ds.expand_dims(it=[0])
+        return Path_Collection(ds)
         
-
 class Trajectory_Collection(object):
     def __init__(self, ds_trajectories: xr.Dataset) -> None:
         """Create a collection of trajectories. Currently, trajectory collections are not allowed to be completely unstructured, but rather the starting points must form a regular grid.
@@ -205,15 +237,15 @@ class Trajectory_Collection(object):
 
 
     @classmethod
-    def from_flowfield(cls, flowfield: FlowField_Collection,x0:np.ndarray | float , y0: np.ndarray | float, z0: np.ndarray | float, dt: float, steps, steps_backward=0, savesteps=None, interp_method='nearest'):
-        x0=np.array(x0).flatten()
-        y0=np.array(y0).flatten()
-        z0=np.array(z0).flatten()
-        x0=xr.DataArray(x0, coords=[('x0',x0)])
-        y0=xr.DataArray(y0, coords=[('y0',y0)])
-        z0=xr.DataArray(z0, coords=[('z0',z0)])
-        t0=xr.DataArray([0.0], coords=[('t0', [0.0])])
-        X,Y,Z,T=advect(flowfield, x0, y0, z0, t0, dt, steps, savesteps, interp_method=interp_method) #result: [x0, y0, z0, it]
+    def from_flowfield(cls, flowfield: FlowField_Collection,x0:np.ndarray | float , y0: np.ndarray | float, z0: np.ndarray | float, advector: Advector):
+        da_x0=np.array(x0, dtype=float).flatten()
+        da_y0=np.array(y0, dtype=float).flatten()
+        da_z0=np.array(z0, dtype=float).flatten()
+        da_x0=xr.DataArray(da_x0, coords=[('x0',da_x0)])
+        da_y0=xr.DataArray(da_y0, coords=[('y0',da_y0)])
+        da_z0=xr.DataArray(da_z0, coords=[('z0',da_z0)])
+        da_t0=xr.DataArray([0.0], coords=[('t0', [0.0])])
+        X,Y,Z,T=advector.advect(flowfield, da_x0, da_y0, da_z0, da_t0) #result: [x0, y0, z0, it]
         # check if all particles have the same time
         #this should be the case for simple euler advection, but may not be fulfilled for more complex advection schemes
         min_t=T.min(dim=[d for d in T.dims if d!='it'])
@@ -225,15 +257,24 @@ class Trajectory_Collection(object):
         ds_trajectories=xr.Dataset({'x': X, 'y': Y, 'z': Z})
         ds_trajectories.coords['it']=('it', times.values)
         ds_trajectories=ds_trajectories.rename(it='T').drop_vars('t0') 
-        return Trajectory_Collection(ds_trajectories)
+        return cls(ds_trajectories)
+        # forward=cls(ds_trajectories)
+        # if steps_backward>0:
+        #     backward=cls.from_flowfield(flowfield, x0, y0, z0, -1*dt, steps=steps_backward, savesteps=savesteps, interp_method=interp_method)
+        #     backward=cls(backward.ds.drop_sel(T=0.0))
+        #     forward=forward.concat(backward)
+        # return forward
+    
+    def __repr__(self):
+        return self.ds.__repr__()
 
 
 class Path_Collection(object):
     def __init__(self, ds):
-        if not {'x', 'y', 'z', 't'} <= set(ds.data_vars.keys()):
-            raise DimensionError("Path collections must have variables 'x', 'y', 'z', 't'.")
         if not {'n', 'it'}==set(ds.dims):
             raise DimensionError(f"Path Collection dataset has only dimensions 'n' and 'it' allowed. Dimensions are {ds.dims}.")
+        if not {'x', 'y', 'z', 't'} <= set(ds.data_vars.keys()):
+            raise DimensionError("Path collections must have variables 'x', 'y', 'z', 't'.")
         valid=ds.notnull()
         reduced=np.logical_and(valid.x, valid.y)
         reduced=np.logical_and(reduced, valid.z)
@@ -268,10 +309,15 @@ class Path_Collection(object):
         return cls(ds)
     
     @classmethod
-    def from_field_collection(cls, particle_coll: Particle_Collection, field_coll: Field_Collection, t: np.ndarray, matching: str='hybrid'):
+    def from_flowfield_collection(cls, particle_coll: Particle_Collection, field_coll: Field_Collection, advector: Advector):
         """Create a path collection from initial particle positions and a field collection.
-            In this case, the fields can be time dependent and the paths are calculated explicitly for each particle. For stationary fields, it is probably more efficient to calculate trajectories first and then create the path collection from the trajectory collection.
+            In this case, the fields can be time dependent and the paths are calculated explicitly for each particle. For stationary fields, it is usually more efficient to calculate trajectories first and then create the path collection from the trajectory collection.
         """
+        X,Y,Z,T=advector.advect(field_coll, particle_coll.x0, particle_coll.y0, particle_coll.z0, particle_coll.t0)
+        ds=xr.Dataset({'x': X, 'y': Y, 'z': Z, 't': T})
+        return cls(ds)
+
+
 
 
     @classmethod
@@ -285,12 +331,24 @@ class Path_Collection(object):
         valid=self.ds.x.notnull() #it is enough to check x, since by construction we equalize nans between x,y,z
         return valid
 
+    def sel_nearest_time(self, time, tolerance=None):
+        """For every particle, choose the nearest time step in the dataset.
+        This is useful, since paths are stored in format (n, it), so selecting an absolute time is not straigtforward.
+        """
+        #maybe, in the future this can be acomplisehd with NDPointIndex, but currently, the tolerance is not supported for sel() calls with this index.
+        nearest_it=abs(self.ds.t-time).argmin('it')
+        result=self.ds.isel(it=nearest_it)
+        if tolerance is not None:
+            valid=abs(self.ds.t-time).min('it')<=tolerance
+            result=result.where(valid)
+        return result
+
 
 class Field_Collection(object):
     def __init__(self, f) -> None:
         if not {'x', 'y', 'z', 't'}<=set(f.dims):
             raise DimensionError("A field collection must have dimensions 'x', 'y', 'z' and 't'.")
-        self.f=f.sortby(['x', 'y', 'z', 't'])
+        self.f=f.astype(float).sortby(['x', 'y', 'z', 't'])
         ix=xr.DataArray(np.arange(len(f.x)), coords=[('x', f.x.values)])
         iy=xr.DataArray(np.arange(len(f.y)), coords=[('y', f.y.values)])
         iz=xr.DataArray(np.arange(len(f.z)), coords=[('z', f.z.values)])
@@ -347,7 +405,7 @@ class Field_Collection(object):
 
     
     @classmethod
-    def create_regular(cls, times: np.ndarray, xlim: tuple, ylim: tuple, zlim: tuple, nx=100, ny=100, nz=100, fill_value=np.nan):
+    def create_regular(cls, times: np.ndarray | float, xlim: tuple, ylim: tuple, zlim: tuple, nx=100, ny=100, nz=100, fill_value=np.nan):
         #create field axes, big enough to hold all paths completely
         x=np.linspace(xlim[0], xlim[1], nx)
         x=xr.DataArray(x, coords=[('x', x)])
@@ -356,9 +414,9 @@ class Field_Collection(object):
         z=np.linspace(zlim[0], zlim[1], nz)
         z=xr.DataArray(z, coords=[('z', z)])
         #Time axis is given as argument
-        ft=times.flatten()
+        ft=np.array(times).flatten()
         ft=xr.DataArray(ft, coords=[('t', ft)])
-        field_da=xr.full_like(xr.broadcast(x,y,z,ft)[0],fill_value=fill_value)
+        field_da=xr.full_like(broadcast_dim_only(x,y,z,ft)[0],fill_value=fill_value)
         field=cls(field_da)
         return field
 
@@ -398,3 +456,6 @@ class Field_Collection(object):
         particle_property=particle_property.where(particle_property.id>=0, drop=True)
         property_index_x, property_index_y, property_index_z, property_index_ft=self.unravel_index(particle_property.id)
         self.f[{"x":property_index_x,"y":property_index_y, "z":property_index_z, "t":property_index_ft}]=particle_property.values
+    
+    def __repr__(self):
+        return self.f.__repr__()
