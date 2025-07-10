@@ -23,30 +23,57 @@ class Test_Flowfield_Collection(ut.TestCase):
     def test_flowfield_collection(self):
         u=xr.DataArray(np.arange(10), coords=[(('x', np.arange(10)))])
         ff=adv.FlowField_Collection(u,0.0, 0.0)
-        npt.assert_array_equal(ff.u.y, [-adv.FIELD_BOUNDARY, adv.FIELD_BOUNDARY]) #missing dimensions are added from -inf to inf
-        npt.assert_array_equal(ff.v.y, [-adv.FIELD_BOUNDARY, adv.FIELD_BOUNDARY]) #missing dimensions are added from -inf to inf
-        npt.assert_array_equal(ff.v.values, np.zeros((2,2,2))) #floats are accepted and converted to infinitely valid arrays
+        npt.assert_array_equal(ff.ds.u.y, [-adv.FIELD_BOUNDARY, adv.FIELD_BOUNDARY]) #missing dimensions are added from -inf to inf
+        npt.assert_array_equal(ff.ds.v.y, [-adv.FIELD_BOUNDARY, adv.FIELD_BOUNDARY]) #missing dimensions are added from -inf to inf
+        npt.assert_array_equal(ff.ds.v.values, np.zeros((2,2,2,10))) #floats are accepted and converted to infinitely valid arrays
+
+        w=xr.DataArray(np.arange(10), coords=[(('w0', np.arange(10)))]) #we can add additional dimensions to the flowfield components
+        ff=adv.FlowField_Collection(u,0.0,w)
+        assert({'x', 'y', 'z', 't', 'w0'}==set(ff.ds.w.dims))
 
         w=xr.DataArray(np.arange(10), coords=[(('w', np.arange(10)))]) #we can add additional dimensions to the flowfield components
-        ff=adv.FlowField_Collection(u,0.0,w)
-        assert({'x', 'y', 'z', 'w'}==set(ff.w.dims))
+        with self.assertRaises(adv.DimensionError):
+            ff=adv.FlowField_Collection(u,0.0,w)
 
     def test_path_collection(self):
-        x=xr.DataArray([[0,np.nan], [2,3]], coords=[('n', [0,1]), ('t', [0.1, 0.2])])
-        y=xr.DataArray([[0,1], [np.nan,3]], coords=[('n', [0,1]), ('t', [0.1, 0.2])])
+        x=xr.DataArray([[0,np.nan], [2,3]], coords=[('n', [0,1]), ('it', [0.1, 0.2])])
+        y=xr.DataArray([[0,1], [np.nan,3]], coords=[('n', [0,1]), ('it', [0.1, 0.2])])
         z=x.copy()
-        path_coll=adv.Path_Collection(x,y,z)
-        expected=xr.DataArray([[0,np.nan], [np.nan,3]], coords=[('n', [0,1]), ('t', [0.1, 0.2])]) #nan in one coordinate leads to nans in other coordinates as well
-        xrt.assert_equal(path_coll.x, expected)
-        xrt.assert_equal(path_coll.y, expected)
+        t=xr.DataArray([[0.1, 0.2], [0.1, 0.2]], coords=[('n', [0,1]), ('t', [0.1, 0.2])])
+        with self.assertRaises(adv.DimensionError):
+            ds=xr.Dataset({'x': x, 'y': y, 'z': z, 't': t})
+            path_coll=adv.Path_Collection(ds) #Dimension 't' not allowed
+        t=xr.DataArray([[0.1, 0.2], [0.1, 0.2]], coords=[('n', [0,1]), ('it', [0.1, 0.2])])
+        ds=xr.Dataset({'x': x, 'y': y, 'z': z, 't': t})
+        path_coll=adv.Path_Collection(ds) #Dimension 't' not allowed
+        expected=xr.DataArray([[0,np.nan], [np.nan,3]], coords=[('n', [0,1]), ('it', [0.1, 0.2])]) #nan in one coordinate leads to nans in other coordinates as well
+        xrt.assert_equal(path_coll.ds.x, expected)
+        xrt.assert_equal(path_coll.ds.y, expected)
 
 class Test_TrajectoryCollection(ut.TestCase):
     def test_backward(self):
         #steady 3 m/s flow
         u=xr.DataArray([3.0, 3.0], coords=[('z', [0,1.0])]).astype(float)
         ff=adv.FlowField_Collection(u, 0,0)
-        traj_coll=adv.Trajectory_Collection.from_flowfield(ff, np.array([0.0]), np.array([0.0]), np.array([0.5]), 0.1, 10, steps_backward=10)
+        advector=adv.EulerAdvector(dt=0.1, steps=10, steps_backward=10, savesteps=None)
+        traj_coll=adv.Trajectory_Collection.from_flowfield(ff, np.array([0.0]), np.array([0.0]), np.array([0.5]), advector=advector)
         #after 0.2s, the particle should be at 0.6m
-        self.assertAlmostEqual(traj_coll.x.sel(T=0.2, method='nearest').item(), 0.6)
-        self.assertAlmostEqual(traj_coll.x.sel(T=-0.2, method='nearest').item(), -0.6)
+        self.assertAlmostEqual(traj_coll.ds.x.sel(T=0.2, method='nearest').item(), 0.6)
+        self.assertAlmostEqual(traj_coll.ds.x.sel(T=-0.2, method='nearest').item(), -0.6)
+
+class Test_ParticleCollection(ut.TestCase):
+    def test_to_path_collection(self):
+        #it is possible to create a one-step path collection from a particle collection
+        x0=xr.DataArray(np.arange(10), dims=['foo'])
+        particles=adv.Particle_Collection(x0=x0, y0=0.0, z0=0.0, t0=0.0, property=1.0)
+        paths=particles.to_path_collection()
+        assert {'n', 'it'}== set(paths.ds.dims)
+        xrt.assert_equal(paths.ds.x.isel(it=0).drop_vars('it'), particles.x0)
+    def test_broadcast_dim_only(self):
+        #trying to create a particle collection from data arrays with non-matching coordinates should raise an error
+        x0=xr.DataArray([1,2,3], coords={'foo': [1,2,3]})
+        y0=xr.DataArray([1,2,3], coords={'foo': [4,5,6]})
+        with self.assertRaises(xr.structure.alignment.AlignmentError):
+            adv.Particle_Collection(x0=x0, y0=y0, z0=0.0, t0=0.0, property=1.0)
+
 
