@@ -196,11 +196,14 @@ class Particle_Collection(object):
         select_arrays=list(field_selectors.values())
         x0,y0,z0,t0,property,*select_arrays=broadcast_dim_only(x0,y0,z0,t0,property,*select_arrays)
         ds=xr.Dataset({'x0': x0, 'y0': y0, 'z0': z0, 't0': t0, 'property': property})
-        field_selectors=dict(zip(select_keys, select_arrays))
-        #flatten all arrays
         #TODO: Maybe, we can use numpy from here on, since flattened, the multidimensional capabilities of xarray are not necessary
         ds=flatten_da(ds)
-        field_selectors={k:flatten_da(da) for k,da in field_selectors.items()}
+        select_arrays= [flatten_da(da) for da in select_arrays]
+        if remove_nans:
+            valid=np.logical_and.reduce([da.notnull() for da in ds.data_vars.values()]+[da.notnull() for da in select_arrays])
+            ds=ds.isel(n=valid)
+            select_arrays=[da.isel(n=valid) for da in select_arrays]
+        field_selectors=dict(zip(select_keys, select_arrays))
         self.ds=ds
         self.field_selectors=field_selectors
 
