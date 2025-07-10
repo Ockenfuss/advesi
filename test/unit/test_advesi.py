@@ -62,13 +62,21 @@ class Test_TrajectoryCollection(ut.TestCase):
         self.assertAlmostEqual(traj_coll.ds.x.sel(T=-0.2, method='nearest').item(), -0.6)
 
 class Test_ParticleCollection(ut.TestCase):
+    def test_create_particle_collection(self):
+        #it is possible to create a particle collection from data arrays
+        x0=xr.DataArray([1,2,3], coords={'foo': [1,2,3]})
+        y0=xr.DataArray([4,5,6], coords={'bar': [1,2,3]})
+        z0=xr.DataArray([7,8,9], coords={'baz': [1,2,3]})
+        property=xr.DataArray([13,14,15], coords={'foo': [1,2,3]})
+        particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property)
+        assert {'n'} == set(particles.ds.dims)
     def test_to_path_collection(self):
         #it is possible to create a one-step path collection from a particle collection
         x0=xr.DataArray(np.arange(10), dims=['foo'])
         particles=adv.Particle_Collection(x0=x0, y0=0.0, z0=0.0, t0=0.0, property=1.0)
         paths=particles.to_path_collection()
         assert {'n', 'it'}== set(paths.ds.dims)
-        xrt.assert_equal(paths.ds.x.isel(it=0).drop_vars('it'), particles.x0)
+        xrt.assert_equal(paths.ds.x.isel(it=0).drop_vars('it'), particles.ds.x0)
     def test_broadcast_dim_only(self):
         #trying to create a particle collection from data arrays with non-matching coordinates should raise an error
         x0=xr.DataArray([1,2,3], coords={'foo': [1,2,3]})

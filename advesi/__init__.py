@@ -18,18 +18,20 @@ def _broadcast_like_list(da: xr.DataArray, *args: xr.DataArray, exclude=None):
     return da
 
 def flatten_da(da):
+    """Flatten a DataArray or Dataset to a 1D array with dimension 'n'."""
     if len(da.dims)==0:
         return da.expand_dims(n=[0])
     if len(da.dims)==1:
-        da=da.rename({da.dims[0]:'n'})
-        da.coords['n']=('n', np.arange(len(da)))
+        dim=list(da.sizes.keys())[0] #get the only dimension
+        da=da.rename({dim:'n'})
+        da.coords['n']=('n', np.arange(len(da.n)))
         return da
     if len(da.dims)>=2:
         if 'n' in da.dims:
             raise DimensionError("'n' cannot be in dimensions when flattening array!")
         da=da.stack(n=da.dims)
         da=da.drop_vars(list(da.coords.keys())) #drop complete multiindex
-        da.coords['n']=('n', np.arange(len(da))) #assign new, linear coordinates
+        da.coords['n']=('n', np.arange(len(da.n))) #assign new, linear coordinates
         return da
 
 
@@ -182,7 +184,7 @@ class EulerAdvector(Advector):
         
 
 class Particle_Collection(object):
-    def __init__(self, x0: float | xr.DataArray, y0: float | xr.DataArray, z0: float | xr.DataArray, t0: float | xr.DataArray, property: float | xr.DataArray, field_selectors: Dict[str, xr.DataArray]={}):
+    def __init__(self, x0: float | xr.DataArray, y0: float | xr.DataArray, z0: float | xr.DataArray, t0: float | xr.DataArray, property: float | xr.DataArray, field_selectors: Dict[str, xr.DataArray]={}, remove_nans=True):
         x0=xr.DataArray(x0).astype(float)
         y0=xr.DataArray(y0).astype(float)
         z0=xr.DataArray(z0).astype(float)
@@ -193,15 +195,13 @@ class Particle_Collection(object):
         select_keys=list(field_selectors.keys())
         select_arrays=list(field_selectors.values())
         x0,y0,z0,t0,property,*select_arrays=broadcast_dim_only(x0,y0,z0,t0,property,*select_arrays)
+        ds=xr.Dataset({'x0': x0, 'y0': y0, 'z0': z0, 't0': t0, 'property': property})
         field_selectors=dict(zip(select_keys, select_arrays))
         #flatten all arrays
         #TODO: Maybe, we can use numpy from here on, since flattened, the multidimensional capabilities of xarray are not necessary
-        self.x0=flatten_da(x0)
-        self.y0=flatten_da(y0)
-        self.z0=flatten_da(z0)
-        self.t0=flatten_da(t0)
-        self.property=flatten_da(property)
+        ds=flatten_da(ds)
         field_selectors={k:flatten_da(da) for k,da in field_selectors.items()}
+        self.ds=ds
         self.field_selectors=field_selectors
 
     
@@ -211,7 +211,7 @@ class Particle_Collection(object):
     
     def to_path_collection(self):
         """Convert the particle collection to a path collection with only the initial positions"""
-        ds=xr.Dataset({'x': self.x0, 'y': self.y0, 'z': self.z0, 't': self.t0})
+        ds=xr.Dataset({'x': self.ds.x0, 'y': self.ds.y0, 'z': self.ds.z0, 't': self.ds.t0})
         ds=ds.expand_dims(it=[0])
         return Path_Collection(ds)
         
@@ -286,22 +286,22 @@ class Path_Collection(object):
     def from_trajectory_collection(cls, particle_coll: Particle_Collection, trajectory_coll: Trajectory_Collection, t: np.ndarray, matching: str='hybrid'):
         t=np.array(t).flatten()
         t=xr.DataArray(t, coords=[('t', t)])
-        T=t-particle_coll.t0 #relative time
+        T=t-particle_coll.ds.t0 #relative time
         if matching=='exact':
-            selector=particle_coll.field_selectors | {'T':T, 'x0': particle_coll.x0, 'y0':particle_coll.y0, 'z0':particle_coll.z0}
+            selector=particle_coll.field_selectors | {'T':T, 'x0': particle_coll.ds.x0, 'y0':particle_coll.ds.y0, 'z0':particle_coll.ds.z0}
             ds=trajectory_coll.ds.sel(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
         elif matching=='interpolate':
             #Known bugs: interpolations do not work if we have only one value along a dimension.
             #Solution: implement interpolation only on >1 dimensions
             if 1 in trajectory_coll.x.shape:
                 raise DimensionError("Interpolation matching is currently not working if any of the dimensions has length one.")
-            selector=particle_coll.field_selectors | {'T':T, 'x0': particle_coll.x0, 'y0':particle_coll.y0, 'z0':particle_coll.z0}
+            selector=particle_coll.field_selectors | {'T':T, 'x0': particle_coll.ds.x0, 'y0':particle_coll.ds.y0, 'z0':particle_coll.ds.z0}
             ds=trajectory_coll.ds.interp(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
         elif matching=='hybrid': #select initial location exactly, interpolate time and additional selectors like fallspeed
             #TODO: After selection, the array has dimensions [n,T,...]. Therefore, the 'n' is interpolated again in the interpolation.
             #Currently, there seems to be no way in xarray to to a hybrid (partly exact, partly interpolate) selection in one go
             interpolation_selector=particle_coll.field_selectors | {'T':T} 
-            ds=trajectory_coll.ds.sel(x0=particle_coll.x0,y0=particle_coll.y0, z0=particle_coll.z0).squeeze(drop=True).interp(interpolation_selector).drop_vars(['x0', 'y0', 'z0', 'T'], errors='ignore') #squeeze out 'n' if it has length one, since otherwise, the interpolation in 'n' will fail
+            ds=trajectory_coll.ds.sel(x0=particle_coll.ds.x0,y0=particle_coll.ds.y0, z0=particle_coll.ds.z0).squeeze(drop=True).interp(interpolation_selector).drop_vars(['x0', 'y0', 'z0', 'T'], errors='ignore') #squeeze out 'n' if it has length one, since otherwise, the interpolation in 'n' will fail
         else:
             raise KeyError(f"Matching '{matching}' not available.")
         ds=ds.rename(t='it') #here, coordinates are actually absolute times, but path collections are more general and just require a general time index 'it'
@@ -313,7 +313,7 @@ class Path_Collection(object):
         """Create a path collection from initial particle positions and a field collection.
             In this case, the fields can be time dependent and the paths are calculated explicitly for each particle. For stationary fields, it is usually more efficient to calculate trajectories first and then create the path collection from the trajectory collection.
         """
-        X,Y,Z,T=advector.advect(field_coll, particle_coll.x0, particle_coll.y0, particle_coll.z0, particle_coll.t0)
+        X,Y,Z,T=advector.advect(field_coll, particle_coll.ds.x0, particle_coll.ds.y0, particle_coll.ds.z0, particle_coll.ds.t0)
         ds=xr.Dataset({'x': X, 'y': Y, 'z': Z, 't': T})
         return cls(ds)
 
@@ -437,7 +437,7 @@ class Field_Collection(object):
         id=self._get_id(path_coll.ds)
 
         #Add the combined index as a multi index to the particle property field and use groupby
-        particle_property=part_coll.property.broadcast_like(path_coll.ds) #add the time dimension
+        particle_property=part_coll.ds.property.broadcast_like(path_coll.ds) #add the time dimension
         particle_property.coords["id"]=(id.dims, id.values)
         particle_property=particle_property.groupby('id')
         if aggregation=='max':
