@@ -103,15 +103,9 @@ class FlowField_Collection(object):
         return _broadcast_like_list(da, self.ds.u, self.ds.v, self.ds.w, exclude=["x", "y","z", "t"])
     
     def _get_nearest(self, x, y, z, t):
-        # u=self.u.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
-        # v=self.v.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
-        # w=self.w.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
         return self.ds.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
     
     def _get_interp(self, x, y, z, t):
-        # u=self.u.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
-        # v=self.v.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
-        # w=self.w.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
         return self.ds.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
 
     def get_values(self, x, y, z, t, method='nearest'):
@@ -195,10 +189,11 @@ class Particle_Collection(object):
         select_keys=list(field_selectors.keys())
         select_arrays=list(field_selectors.values())
         x0,y0,z0,t0,property,*select_arrays=broadcast_dim_only(x0,y0,z0,t0,property,*select_arrays)
-        ds=xr.Dataset({'x0': x0, 'y0': y0, 'z0': z0, 't0': t0, 'property': property})
         #TODO: Maybe, we can use numpy from here on, since flattened, the multidimensional capabilities of xarray are not necessary
-        ds=flatten_da(ds)
+        main_arrays={'x0': x0, 'y0': y0, 'z0': z0, 't0': t0, 'property': property}
+        main_arrays={k:flatten_da(v) for k,v in main_arrays.items()}
         select_arrays= [flatten_da(da) for da in select_arrays]
+        ds=xr.Dataset(main_arrays)
         if remove_nans:
             valid=np.logical_and.reduce([da.notnull() for da in ds.data_vars.values()]+[da.notnull() for da in select_arrays])
             ds=ds.isel(n=valid)
@@ -217,7 +212,9 @@ class Particle_Collection(object):
         ds=xr.Dataset({'x': self.ds.x0, 'y': self.ds.y0, 'z': self.ds.z0, 't': self.ds.t0})
         ds=ds.expand_dims(it=[0])
         return Path_Collection(ds)
-        
+    
+    def __repr__(self):
+        return self.ds.__repr__()
 class Trajectory_Collection(object):
     def __init__(self, ds_trajectories: xr.Dataset) -> None:
         """Create a collection of trajectories. Currently, trajectory collections are not allowed to be completely unstructured, but rather the starting points must form a regular grid.
@@ -228,45 +225,30 @@ class Trajectory_Collection(object):
         ds_trajectories : xr.Dataset
             Dataset with coordinates of the trajectories. Must have variables x,y,z and coordinates 'x0', 'y0', 'z0' and T, where T is the time relative to the starting position.
         """
-        if not {'x', 'y', 'z'} == set(ds_trajectories.data_vars.keys()):
-            raise DimensionError("Trajectory collections must have variables 'x', 'y', 'z'.")
-        if not {'x0', 'y0', 'z0', 'T'} <= set(ds_trajectories.coords.keys()):
-                raise DimensionError("Trajectories must have 'x0', 'y0', 'z0', 'T' coordinates.")
+        if not {'dx', 'dy', 'dz', 'dt'} == set(ds_trajectories.data_vars.keys()):
+            raise DimensionError("Trajectory collections must have variables 'dx', 'dy', 'dz', 'dt'.")
+        if not {'x0', 'y0', 'z0', 't0', 'it'} <= set(ds_trajectories.coords.keys()):
+                raise DimensionError("Trajectories must have 'x0', 'y0', 'z0', 't0' and 'it' coordinates.")
         self.ds=ds_trajectories
     
-    def concat(self, other: Trajectory_Collection):
-        ds=xr.concat([self.ds, other.ds], dim='T').sortby('T')
-        return Trajectory_Collection(ds)
-
-
     @classmethod
-    def from_flowfield(cls, flowfield: FlowField_Collection,x0:np.ndarray | float , y0: np.ndarray | float, z0: np.ndarray | float, advector: Advector):
+    def from_flowfield(cls, flowfield: FlowField_Collection,x0:np.ndarray | float , y0: np.ndarray | float, z0: np.ndarray | float, t0: np.ndarray | float, advector: Advector):
         da_x0=np.array(x0, dtype=float).flatten()
         da_y0=np.array(y0, dtype=float).flatten()
         da_z0=np.array(z0, dtype=float).flatten()
+        da_t0=np.array(t0, dtype=float).flatten()
         da_x0=xr.DataArray(da_x0, coords=[('x0',da_x0)])
         da_y0=xr.DataArray(da_y0, coords=[('y0',da_y0)])
         da_z0=xr.DataArray(da_z0, coords=[('z0',da_z0)])
-        da_t0=xr.DataArray([0.0], coords=[('t0', [0.0])])
-        X,Y,Z,T=advector.advect(flowfield, da_x0, da_y0, da_z0, da_t0) #result: [x0, y0, z0, it]
-        # check if all particles have the same time
-        #this should be the case for simple euler advection, but may not be fulfilled for more complex advection schemes
-        min_t=T.min(dim=[d for d in T.dims if d!='it'])
-        max_t=T.max(dim=[d for d in T.dims if d!='it'])
-        if abs(min_t-max_t).any()>1e-6:
-            raise ValueError("All particles must follow the same time evolution in a trajectory collection.")
-        #now, we can add absolute time coordinates to the time index dimension
-        times=T.isel({d:0 for d in T.dims if d!='it'}) #take the first time, since all times are equal
-        ds_trajectories=xr.Dataset({'x': X, 'y': Y, 'z': Z})
-        ds_trajectories.coords['it']=('it', times.values)
-        ds_trajectories=ds_trajectories.rename(it='T').drop_vars('t0') 
+        da_t0=xr.DataArray(da_t0, coords=[('t0', da_t0)])
+        X,Y,Z,t=advector.advect(flowfield, da_x0, da_y0, da_z0, da_t0) #result: [x0, y0, z0, it]
+        # calculate relative displacements
+        dx=X - da_x0
+        dy=Y - da_y0
+        dz=Z - da_z0
+        dt=t - da_t0
+        ds_trajectories=xr.Dataset({'dx': dx, 'dy': dy, 'dz': dz, 'dt': dt})
         return cls(ds_trajectories)
-        # forward=cls(ds_trajectories)
-        # if steps_backward>0:
-        #     backward=cls.from_flowfield(flowfield, x0, y0, z0, -1*dt, steps=steps_backward, savesteps=savesteps, interp_method=interp_method)
-        #     backward=cls(backward.ds.drop_sel(T=0.0))
-        #     forward=forward.concat(backward)
-        # return forward
     
     def __repr__(self):
         return self.ds.__repr__()
@@ -279,37 +261,57 @@ class Path_Collection(object):
         if not {'x', 'y', 'z', 't'} <= set(ds.data_vars.keys()):
             raise DimensionError("Path collections must have variables 'x', 'y', 'z', 't'.")
         valid=ds.notnull()
-        reduced=np.logical_and(valid.x, valid.y)
-        reduced=np.logical_and(reduced, valid.z)
-        reduced=np.logical_and(reduced, valid.t)
+        reduced=np.logical_and.reduce([v for v in valid.data_vars.values()])
         self.ds=ds.where(reduced)
         
 
+    
     @classmethod
-    def from_trajectory_collection(cls, particle_coll: Particle_Collection, trajectory_coll: Trajectory_Collection, t: np.ndarray, matching: str='hybrid'):
-        t=np.array(t).flatten()
-        t=xr.DataArray(t, coords=[('t', t)])
-        T=t-particle_coll.ds.t0 #relative time
-        if matching=='exact':
-            selector=particle_coll.field_selectors | {'T':T, 'x0': particle_coll.ds.x0, 'y0':particle_coll.ds.y0, 'z0':particle_coll.ds.z0}
-            ds=trajectory_coll.ds.sel(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
-        elif matching=='interpolate':
-            #Known bugs: interpolations do not work if we have only one value along a dimension.
-            #Solution: implement interpolation only on >1 dimensions
-            if 1 in trajectory_coll.x.shape:
-                raise DimensionError("Interpolation matching is currently not working if any of the dimensions has length one.")
-            selector=particle_coll.field_selectors | {'T':T, 'x0': particle_coll.ds.x0, 'y0':particle_coll.ds.y0, 'z0':particle_coll.ds.z0}
-            ds=trajectory_coll.ds.interp(selector).drop_vars(['x0', 'y0', 'z0', 'T'])
-        elif matching=='hybrid': #select initial location exactly, interpolate time and additional selectors like fallspeed
-            #TODO: After selection, the array has dimensions [n,T,...]. Therefore, the 'n' is interpolated again in the interpolation.
-            #Currently, there seems to be no way in xarray to to a hybrid (partly exact, partly interpolate) selection in one go
-            interpolation_selector=particle_coll.field_selectors | {'T':T} 
-            ds=trajectory_coll.ds.sel(x0=particle_coll.ds.x0,y0=particle_coll.ds.y0, z0=particle_coll.ds.z0).squeeze(drop=True).interp(interpolation_selector).drop_vars(['x0', 'y0', 'z0', 'T'], errors='ignore') #squeeze out 'n' if it has length one, since otherwise, the interpolation in 'n' will fail
+    def from_trajectory_collection(cls, particle_coll: Particle_Collection, rel_traj_coll: Trajectory_Collection, matching: str='nearest', substeps=1):
+        if substeps !=1:
+            if matching not in ['interpolate', 'nearest_interpolate']:
+                raise ValueError("Substeps only make sense for 'interpolate' or 'nearest_interpolate' matching.")
+            stepping=1/substeps
+            it=np.arange(0, rel_traj_coll.ds.it.max().item(), stepping)
+            it=xr.DataArray(it, coords=[('it', it)])
+            it_selector={'it': it}
+        else:
+            it_selector={}
+        if matching == 'exact':
+            selector=particle_coll.field_selectors | {'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0}
+            rel_paths=rel_traj_coll.ds.sel(selector)
+        elif matching == 'nearest':
+            selector=particle_coll.field_selectors | {'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0}
+            rel_paths=rel_traj_coll.ds.sel(selector, method='nearest')
+        elif matching == 'interpolate':
+            selector=particle_coll.field_selectors | {'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0} | it_selector
+            rel_paths=rel_traj_coll.ds.interp(selector, kwargs={'fill_value': None})
+        elif matching == 'nearest_exact':
+            #len=1 dimensions are selected nearest, since the flowfield is likely symmetric in these dimensions
+            len1_dims=[d for d in rel_traj_coll.ds.dims if rel_traj_coll.ds[d].size==1]
+            lenn_dims=[d for d in rel_traj_coll.ds.dims if rel_traj_coll.ds[d].size>1]
+            nearest_selector={d:particle_coll.ds[d] for d in len1_dims}
+            exact_selectors=particle_coll.field_selectors | {d:particle_coll.ds[d] for d in lenn_dims}
+            rel_paths=rel_traj_coll.ds.sel(exact_selectors).squeeze(drop=True).sel(nearest_selector, method='nearest')
+        elif matching == 'nearest_interpolate':
+            #len=1 dimensions are selected nearest, field selectors are chosen exact, others are interpolated
+            len1_dims=[d for d in rel_traj_coll.ds.dims if rel_traj_coll.ds[d].size==1]
+            lenn_dims=[d for d in rel_traj_coll.ds.dims if rel_traj_coll.ds[d].size>1]
+            nearest_selector={d:particle_coll.ds[d] for d in len1_dims}
+            interp_selectors={d:particle_coll.ds[d] for d in lenn_dims} | it_selector
+            exact_selectors=particle_coll.field_selectors
+            rel_paths=rel_traj_coll.ds.sel(exact_selectors).squeeze(drop=True).sel(nearest_selector, method='nearest').squeeze(drop=True).interp(interp_selectors)
         else:
             raise KeyError(f"Matching '{matching}' not available.")
-        ds=ds.rename(t='it') #here, coordinates are actually absolute times, but path collections are more general and just require a general time index 'it'
-        ds['t']=ds.it.broadcast_like(ds.x)
-        return cls(ds)
+
+        rel_paths=rel_paths.drop_vars(['x0', 'y0', 'z0', 't0'], errors='ignore')
+        abs_paths=xr.Dataset({
+            'x': rel_paths.dx + particle_coll.ds.x0,
+            'y': rel_paths.dy + particle_coll.ds.y0,
+            'z': rel_paths.dz + particle_coll.ds.z0,
+            't': rel_paths.dt + particle_coll.ds.t0
+        })
+        return cls(abs_paths)
     
     @classmethod
     def from_flowfield_collection(cls, particle_coll: Particle_Collection, field_coll: Field_Collection, advector: Advector):
@@ -320,6 +322,8 @@ class Path_Collection(object):
         ds=xr.Dataset({'x': X, 'y': Y, 'z': Z, 't': T})
         return cls(ds)
 
+    def __repr__(self):
+        return self.ds.__repr__()
 
 
 

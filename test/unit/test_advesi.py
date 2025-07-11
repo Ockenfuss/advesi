@@ -78,6 +78,11 @@ class Test_ParticleCollection(ut.TestCase):
         selector=xr.DataArray([1,np.nan,3], coords={'foo': [1,2,3]})
         particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property, field_selectors={'w': selector})
         assert len(particles.ds.n) == 9 #3x3x1
+        # what happens if the array has a coordinate with the same name?
+        x0=xr.DataArray(np.arange(20), coords=[('x0', np.arange(20))]).astype(float)
+        part_coll=adv.Particle_Collection(x0,0.0,9.0,0.0, 1.0)
+        assert {'x0', 'y0', 'z0', 't0', 'property'} == set(part_coll.ds.data_vars.keys())
+
     def test_to_path_collection(self):
         #it is possible to create a one-step path collection from a particle collection
         x0=xr.DataArray(np.arange(10), dims=['foo'])
