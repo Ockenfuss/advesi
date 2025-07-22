@@ -224,7 +224,7 @@ class Trajectory_Collection(object):
         Parameters
         ----------
         ds_trajectories : xr.Dataset
-            Dataset with coordinates of the trajectories. Must have variables x,y,z and coordinates 'x0', 'y0', 'z0' and T, where T is the time relative to the starting position.
+            Dataset with coordinates of the trajectories. Must have variables dx,dy,dz, dt and coordinates 'x0', 'y0', 'z0', 't0' and it
         """
         if not {'dx', 'dy', 'dz', 'dt'} == set(ds_trajectories.data_vars.keys()):
             raise DimensionError("Trajectory collections must have variables 'dx', 'dy', 'dz', 'dt'.")

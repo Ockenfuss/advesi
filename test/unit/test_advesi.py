@@ -56,10 +56,10 @@ class Test_TrajectoryCollection(ut.TestCase):
         u=xr.DataArray([3.0, 3.0], coords=[('z', [0,1.0])]).astype(float)
         ff=adv.FlowField_Collection(u, 0,0)
         advector=adv.EulerAdvector(dt=0.1, steps=10, steps_backward=10, savesteps=None)
-        traj_coll=adv.Trajectory_Collection.from_flowfield(ff, np.array([0.0]), np.array([0.0]), np.array([0.5]), advector=advector)
+        traj_coll=adv.Trajectory_Collection.from_flowfield(ff, np.array([0.0]), np.array([0.0]), np.array([0.5]), np.array([0.0]), advector=advector)
         #after 0.2s, the particle should be at 0.6m
-        self.assertAlmostEqual(traj_coll.ds.x.sel(T=0.2, method='nearest').item(), 0.6)
-        self.assertAlmostEqual(traj_coll.ds.x.sel(T=-0.2, method='nearest').item(), -0.6)
+        self.assertAlmostEqual(traj_coll.ds.dx.sel(it=2).item(), 0.6)
+        self.assertAlmostEqual(traj_coll.ds.dx.sel(it=-2).item(), -0.6)
 
 class Test_ParticleCollection(ut.TestCase):
     def test_create_particle_collection(self):
