@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict
 import numpy as np
 import xarray as xr
+from advesi.helpers import sort_da
 
 FIELD_BOUNDARY=1e10
 
@@ -439,10 +440,34 @@ class Field_Collection(object):
         f.fill_with(part_coll, path_coll, aggregation)
         return f
 
-    def fill_with(self, part_coll: Particle_Collection, path_coll: Path_Collection, aggregation='max'):
+    def fill_with(self, part_coll: Particle_Collection, path_coll: Path_Collection, aggregation='max', remove_duplicates=False):
+        """_summary_
+
+        Parameters
+        ----------
+        part_coll : Particle_Collection
+            _description_
+        path_coll : Path_Collection
+            _description_
+        aggregation : str, optional
+            _description_, by default 'max'
+        remove_duplicates : bool, optional
+            Make sure every particle is counted only once per cell. This is important for aggregations like 'sum' and e.g. very high trajectory resolutions. By default False
+
+        Raises
+        ------
+        ValueError
+            _description_
+        """
         #set all positions outside of the field to invalid values
         id=self._get_id(path_coll.ds)
-
+        if remove_duplicates:
+            #idea: sort ids in id[n,it] along it. Then, make sure that every cell id occurs at most once. This can be achieved by a diff on the sorted ids, then setting al ids with a diff of 0 to -1.
+            id=sort_da(id, dim='it')
+            id.coords['it']=np.arange(len(id.it)) 
+            diffs=id.diff('it', label='upper') #with upper, we will keep the first id
+            diffs=diffs.reindex_like(id, fill_value=999)
+            id=id.where(diffs!=0, other=-1)
         #Add the combined index as a multi index to the particle property field and use groupby
         particle_property=part_coll.ds.property.broadcast_like(path_coll.ds) #add the time dimension
         particle_property.coords["id"]=(id.dims, id.values)

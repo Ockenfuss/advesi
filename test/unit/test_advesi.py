@@ -97,4 +97,26 @@ class Test_ParticleCollection(ut.TestCase):
         with self.assertRaises(xr.structure.alignment.AlignmentError):
             adv.Particle_Collection(x0=x0, y0=y0, z0=0.0, t0=0.0, property=1.0)
 
+class Test_FieldCollection(ut.TestCase):
+    def test_fill_with_remove_duplicates(self):
+        part_coll=adv.Particle_Collection(x0=0, y0=0, z0=0, t0=0, property=1.0)
+        it=np.linspace(0,1,10)
+        path_x=xr.DataArray(np.linspace(0,1,10), coords=[('it', it)])
+        path_y=xr.DataArray(0.0)
+        path_z=xr.DataArray(np.linspace(0,1,10), coords=[('it', it)])
+        path_t=xr.DataArray(it, coords=[('it', it)])
+        path_x, path_y, path_z, path_t=xr.broadcast(path_x, path_y, path_z, path_t)
+        ds=xr.Dataset({'x': path_x, 'y': path_y, 'z': path_z, 't': path_t})
+        ds=ds.expand_dims('n')
+        path_coll=adv.Path_Collection(ds)
+        # create a 3x3 field
+        field_coll=adv.Field_Collection.create_regular(times=[0,1], xlim=(0,1), ylim=(0,1), zlim=(0,1), nx=4, ny=1, nz=4)
+        # if duplicats are not removed, we will sum the particle multiple times
+        field_coll.fill_with(part_coll, path_coll, aggregation='sum', remove_duplicates=False)
+        assert field_coll.f.max() == 3.0
+        # if duplicats are removed, we should at most get the property value of 1
+        field_coll=adv.Field_Collection.create_regular(times=[0,1], xlim=(0,1), ylim=(0,1), zlim=(0,1), nx=4, ny=1, nz=4)
+        field_coll.fill_with(part_coll, path_coll, aggregation='sum', remove_duplicates=True)
+        assert field_coll.f.max() == 1.0
+
 
