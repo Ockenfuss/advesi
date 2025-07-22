@@ -63,7 +63,7 @@ For more examples, see the provided jupyter notebook.
 ## Data Structures
 Internally, the data is structured as follows:
 - Flowfield_Collection: `ds:u,v,w` with dimension `x,y,z,t`
-- Particle_Collection: Properties `x0,y0,z0,t0,property,selectors` with dimension `n`
-- Trajectory_Collection: `ds:x,y,z` with dimensions `x0,y0,z0,T`
+- Particle_Collection: `ds:x0,y0,z0,t0,property` and dictionary selectors with dimension `n`
+- Trajectory_Collection: `ds:dx,dy,dz,dt` with dimensions at least `x0,y0,z0,t0,it`
 - Path_Collection: `ds:x,y,z,t` with dimensions `n,it`
 - Field_Collection: `ds:f` with dimensions `x,y,z,t`
