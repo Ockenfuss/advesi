@@ -25,11 +25,12 @@ class Test_Flowfield_Collection(ut.TestCase):
         ff=adv.FlowField_Collection(u,0.0, 0.0)
         npt.assert_array_equal(ff.ds.u.y, [-adv.FIELD_BOUNDARY, adv.FIELD_BOUNDARY]) #missing dimensions are added from -inf to inf
         npt.assert_array_equal(ff.ds.v.y, [-adv.FIELD_BOUNDARY, adv.FIELD_BOUNDARY]) #missing dimensions are added from -inf to inf
-        npt.assert_array_equal(ff.ds.v.values, np.zeros((2,2,2,10))) #floats are accepted and converted to infinitely valid arrays
+        npt.assert_array_equal(ff.ds.v.values, np.zeros((1,2,2,2,10))) #floats are accepted and converted to infinitely valid arrays
+        assert({'x', 'y', 'z', 't', 's'}==set(ff.ds.w.dims))
 
-        w=xr.DataArray(np.arange(10), coords=[(('w0', np.arange(10)))]) #we can add additional dimensions to the flowfield components
-        ff=adv.FlowField_Collection(u,0.0,w)
-        assert({'x', 'y', 'z', 't', 'w0'}==set(ff.ds.w.dims))
+        w=xr.DataArray(np.arange(10), coords=[(('w0', np.arange(10)))]) #other dimensions than x,y,z,t,s are not allowed
+        with self.assertRaises(adv.DimensionError):
+            ff=adv.FlowField_Collection(u,0.0,w)
 
         w=xr.DataArray(np.arange(10), coords=[(('w', np.arange(10)))]) #we can add additional dimensions to the flowfield components
         with self.assertRaises(adv.DimensionError):
@@ -49,6 +50,22 @@ class Test_Flowfield_Collection(ut.TestCase):
         expected=xr.DataArray([[0,np.nan], [np.nan,3]], coords=[('n', [0,1]), ('it', [0.1, 0.2])]) #nan in one coordinate leads to nans in other coordinates as well
         xrt.assert_equal(path_coll.ds.x, expected)
         xrt.assert_equal(path_coll.ds.y, expected)
+
+class Test_EulerAdvector(ut.TestCase):
+    def test_advection(self):
+        #steady 3 m/s flow
+        u=xr.DataArray([3.0, 3.0], coords=[('z', [0,1.0])]).astype(float)
+        ff=adv.FlowField_Collection(u, 0,0)
+        advector=adv.EulerAdvector(dt=0.1, steps=10, steps_backward=10, savesteps=None)
+        x0=xr.DataArray([0.0], coords=[('n', [0])])
+        y0=xr.DataArray([0.0], coords=[('n', [0])])
+        z0=xr.DataArray([0.0], coords=[('n', [0])])
+        t0=xr.DataArray([0.0], coords=[('n', [0])])
+        selector=adv.DataArraySelector(xr.ones_like(x0))
+        x,y,z,t=advector.advect(ff, x0=x0, y0=y0, z0=z0, t0=t0, n=x0.n, selector=selector)
+        #after 0.2s, the particle should be at 0.6m
+        self.assertAlmostEqual(x.sel(it=2).item(), 0.6)
+        self.assertAlmostEqual(x.sel(it=-2).item(), -0.6)
 
 class Test_TrajectoryCollection(ut.TestCase):
     def test_backward(self):
@@ -75,13 +92,28 @@ class Test_ParticleCollection(ut.TestCase):
         particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property)
         assert len(particles.ds.n) == 18 #3x3x2
         # this also holds for the field selectors
-        selector=xr.DataArray([1,np.nan,3], coords={'foo': [1,2,3]})
-        particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property, field_selectors={'w': selector})
-        assert len(particles.ds.n) == 9 #3x3x1
+        # selector=xr.DataArray([1,np.nan,3], coords={'foo': [1,2,3]})
+        # particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property, field_selectors={'w': selector})
+        # assert len(particles.ds.n) == 9 #3x3x1
         # what happens if the array has a coordinate with the same name?
         x0=xr.DataArray(np.arange(20), coords=[('x0', np.arange(20))]).astype(float)
         part_coll=adv.Particle_Collection(x0,0.0,9.0,0.0, 1.0)
         assert {'x0', 'y0', 'z0', 't0', 'property'} == set(part_coll.ds.data_vars.keys())
+    
+    def test_advect_multiple_particles(self):
+        #it is possible to advect multiple particles at once
+        x0=xr.DataArray([1,2,3], coords={'foo': [1,2,3]})
+        y0=xr.DataArray([4,5,6], coords={'bar': [1,2,3]})
+        z0=xr.DataArray([7,8,9], coords={'baz': [1,2,3]})
+        property=xr.DataArray([13,14,15], coords={'foo': [1,2,3]})
+        particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property)
+        u=xr.DataArray([1.0], coords=[('z', [0])])
+        ff=adv.FlowField_Collection(u=u, v=0.0, w=0.0)
+        advector=adv.EulerAdvector(dt=0.1, steps=11)
+        paths=adv.Path_Collection.from_flowfield_collection(particles, ff, advector)
+        #after 11 steps, each particle should have moved 1m
+        x_expected=particles.ds.x0 + 1.0
+        npt.assert_allclose(paths.ds.x.sel(it=10).values, x_expected.values)
 
     def test_to_path_collection(self):
         #it is possible to create a one-step path collection from a particle collection

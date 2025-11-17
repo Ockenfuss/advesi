@@ -52,6 +52,8 @@ class FlowField_Collection(object):
             for d in ['u', 'v', 'w']:
                 if d in da.dims:
                     raise DimensionError(f"FlowField_Collection is not allowed to have a '{d}' dimension, since this name will be used for the variable '{d}' in the internal dataset.")
+            if not set(da.dims).issubset({'x', 'y', 'z', 't', 's'}):
+                raise DimensionError(f"FlowField_Collection is not allowed to have dimensions {da.dims}, only 'x', 'y', 'z', 't', 's' are allowed.")
         u,v,w=broadcast_dim_only(u,v,w)
         u=self._add_missing_dimensions(u)
         v=self._add_missing_dimensions(v)
@@ -93,37 +95,60 @@ class FlowField_Collection(object):
 
     
     def _add_missing_dimensions(self,da: xr.DataArray):
-        """If one of x,y,z,t is missing in the input velocity components, add it as a coordinate from -advesi.FIELD_BOUNDARY to advesi.FIELD_BOUNDARY."""
-        for d in ["x", "y","z", "t"]:
+        """If one of x,y,z,t,s is missing in the input velocity components, add it as a coordinate from -advesi.FIELD_BOUNDARY to advesi.FIELD_BOUNDARY.
+        For the selector, add it as 1"""
+        for d in ["x", "y","z", "t", "s"]:
             if d not in da.dims:
-                coord=xr.DataArray([-FIELD_BOUNDARY, FIELD_BOUNDARY], coords=[(d, [-FIELD_BOUNDARY, FIELD_BOUNDARY])])
+                if d == "s":
+                    coord= xr.DataArray([1], coords=[(d, [1])])
+                else:
+                    coord=xr.DataArray([-FIELD_BOUNDARY, FIELD_BOUNDARY], coords=[(d, [-FIELD_BOUNDARY, FIELD_BOUNDARY])])
                 da=da.broadcast_like(coord)
         return da
     
-    def _broadcast_array_to_field(self,da):
-        return _broadcast_like_list(da, self.ds.u, self.ds.v, self.ds.w, exclude=["x", "y","z", "t"])
+    def _get_nearest(self, x, y, z, t, s_kwarg):
+        return self.ds.sel(x=x, y=y, z=z, t=t, **s_kwarg, method='nearest').drop_vars(["x","y","z", "t", "s"])
     
-    def _get_nearest(self, x, y, z, t):
-        return self.ds.sel(x=x, y=y, z=z, t=t, method='nearest').drop_vars(["x","y","z"])
-    
-    def _get_interp(self, x, y, z, t):
-        return self.ds.interp(x=x, y=y, z=z, t=t, kwargs={'fill_value':None}).drop_vars(["x","y","z"])
+    def _get_interp(self, x, y, z, t, s_kwarg):
+        return self.ds.interp(x=x, y=y, z=z, t=t, **s_kwarg, kwargs={'fill_value':None}).drop_vars(["x","y","z", "t", "s"])
 
-    def get_values(self, x, y, z, t, method='nearest'):
+    def get_values(self, x, y, z, t,s_kwarg, method='nearest'):
         if method=='nearest':
-            return self._get_nearest(x, y, z, t)
+            return self._get_nearest(x, y, z, t, s_kwarg)
         elif method=='interpolate':
-            return self._get_interp(x, y, z, t)
+            return self._get_interp(x, y, z, t, s_kwarg)
         else:
             raise KeyError(f"Method '{method}' not available. Use 'nearest' or 'interpolate'.")
     
     def __repr__(self):
         return self.ds.__repr__()
 
+class FieldSelector(object):
+    def get_field_selector(self, x,y,z,t,n):
+        raise NotImplementedError("This method should be implemented in subclasses.")
+
+
+class FunctionSelector(FieldSelector):
+    def __init__(self, s_func):
+        self.s_func=s_func
+    def get_field_selector(self, x, y, z, t, n):
+            return {'s': self.s_func(x,y,z,t,n)}
+
+class DataArraySelector(FieldSelector):
+    def __init__(self, selector: xr.DataArray):
+        if not isinstance(selector, xr.DataArray):
+            raise TypeError("Selector must be an xarray DataArray.")
+        self.selector=selector
+    def get_field_selector(self, x, y, z, t, n):
+        return {'s': self.selector.sel(n=n)}
+
+
+
 class Advector(object):
     def __init__(self):
         """Advector class to advect particles in a flow field."""
         pass
+
 class EulerAdvector(Advector):
     def __init__(self, dt, steps, steps_backward=0, savesteps=None, interp_method='interpolate'):
         self.dt= dt
@@ -140,36 +165,53 @@ class EulerAdvector(Advector):
         self.intermediate_interval=intermediate_interval
         self.interp_method=interp_method
 
-    def _forward(self, flowfield : FlowField_Collection, x0, y0, z0, t0, dt, save_steps, intermediate_interval):
+    def _forward(self, flowfield : FlowField_Collection, x0, y0, z0, t0,n, dt, save_steps, intermediate_interval, selector: FieldSelector):
             it=np.sign(save_steps)*np.arange(0, abs(save_steps))
             it=xr.DataArray(it, coords=[('it', it)])
-            X,Y,Z,T,_=broadcast_dim_only(x0,y0,z0,t0, it)
-            X=flowfield._broadcast_array_to_field(X).copy()
-            Y=flowfield._broadcast_array_to_field(Y).copy()
-            Z=flowfield._broadcast_array_to_field(Z).copy()
-            T=flowfield._broadcast_array_to_field(T).copy()
-            Xi=X.isel(it=0).copy().drop_vars("it") #current positions in iteration scheme
-            Yi=Y.isel(it=0).copy().drop_vars("it")
-            Zi=Z.isel(it=0).copy().drop_vars("it")
-            Ti=T.isel(it=0).copy().drop_vars("it")
+            X,Y,Z,T,n=broadcast_dim_only(x0,y0,z0,t0,n)
+            # X,Y,Z,T,_=broadcast_dim_only(X,Y,Z,T,it)
+            # X=X.copy() # broadcast returns only a view
+            # Y=Y.copy()
+            # Z=Z.copy()
+            # T=T.copy()
+            # Xc=X.isel(it=0).copy().drop_vars("it") #current positions in iteration scheme
+            # Yc=Y.isel(it=0).copy().drop_vars("it")
+            # Zc=Z.isel(it=0).copy().drop_vars("it")
+            # Tc=T.isel(it=0).copy().drop_vars("it")
+            Xc=X
+            Yc=Y
+            Zc=Z
+            Tc=T
 
+            Xc_list=[]
+            Yc_list=[]
+            Zc_list=[]
+            Tc_list=[]
             for save_it in range(len(it)):
-                X[{"it":save_it}]=Xi
-                Y[{"it":save_it}]=Yi
-                Z[{"it":save_it}]=Zi
-                T[{"it":save_it}]=Ti
+                Xc_list.append(Xc)
+                Yc_list.append(Yc)
+                Zc_list.append(Zc)
+                Tc_list.append(Tc)
+                # X[{"it":save_it}]=Xc
+                # Y[{"it":save_it}]=Yc
+                # Z[{"it":save_it}]=Zc
+                # T[{"it":save_it}]=Tc
                 for intermediate_it in range(intermediate_interval):
-                    ds= flowfield.get_values(Xi, Yi, Zi, Ti, method=self.interp_method)
-                    Xi=Xi+ds.u*dt
-                    Yi=Yi+ds.v*dt
-                    Zi=Zi+ds.w*dt
-                    Ti=Ti+dt
+                    ds= flowfield.get_values(Xc, Yc, Zc, Tc, s_kwarg=selector.get_field_selector(Xc,Yc,Zc,Tc,n), method=self.interp_method)
+                    Xc=Xc+ds.u*dt
+                    Yc=Yc+ds.v*dt
+                    Zc=Zc+ds.w*dt
+                    Tc=Tc+dt
+            X=xr.concat(Xc_list, dim=it)
+            Y=xr.concat(Yc_list, dim=it)
+            Z=xr.concat(Zc_list, dim=it)
+            T=xr.concat(Tc_list, dim=it)
             return X,Y,Z,T
     
-    def advect(self, flowfield : FlowField_Collection, x0, y0, z0, t0):
-            Xf,Yf,Zf,Tf=self._forward(flowfield, x0, y0, z0, t0, self.dt, self.steps_forward, self.intermediate_interval)
+    def advect(self, flowfield : FlowField_Collection, x0, y0, z0, t0,n, selector):
+            Xf,Yf,Zf,Tf=self._forward(flowfield, x0, y0, z0, t0,n, self.dt, self.steps_forward, self.intermediate_interval, selector)
             if self.steps_backward>0:
-                Xb,Yb,Zb,Tb=self._forward(flowfield, x0, y0, z0, t0, -self.dt, -self.steps_backward, self.intermediate_interval)
+                Xb,Yb,Zb,Tb=self._forward(flowfield, x0, y0, z0, t0,n, -self.dt, -self.steps_backward, self.intermediate_interval, selector)
                 Xf=xr.concat([Xb.drop_sel(it=0), Xf], dim='it').sortby('it')
                 Yf=xr.concat([Yb.drop_sel(it=0), Yf], dim='it').sortby('it')
                 Zf=xr.concat([Zb.drop_sel(it=0), Zf], dim='it').sortby('it')
@@ -179,34 +221,36 @@ class EulerAdvector(Advector):
         
 
 class Particle_Collection(object):
-    def __init__(self, x0: float | xr.DataArray, y0: float | xr.DataArray, z0: float | xr.DataArray, t0: float | xr.DataArray, property: float | xr.DataArray, field_selectors: Dict[str, xr.DataArray]={}, remove_nans=True):
+    def __init__(self, x0: float | xr.DataArray, y0: float | xr.DataArray, z0: float | xr.DataArray, t0: float | xr.DataArray, property: float | xr.DataArray, selector=None, remove_nans=True):
         x0=xr.DataArray(x0).astype(float)
         y0=xr.DataArray(y0).astype(float)
         z0=xr.DataArray(z0).astype(float)
         t0=xr.DataArray(t0).astype(float)
         property=xr.DataArray(property).astype(float)
-        field_selectors={k:xr.DataArray(v) for k,v in field_selectors.items()}
-        #first, broadcast all given arrays
-        select_keys=list(field_selectors.keys())
-        select_arrays=list(field_selectors.values())
-        x0,y0,z0,t0,property,*select_arrays=broadcast_dim_only(x0,y0,z0,t0,property,*select_arrays)
+        x0,y0,z0,t0,property=broadcast_dim_only(x0,y0,z0,t0,property)
+        if callable(selector):
+            self.selector=FunctionSelector(selector)
+        else:
+            if selector is None:
+                selector=xr.ones_like(x0)
+            selector=xr.DataArray(selector).astype(float)
+            x0,y0,z0,t0,property,selector=broadcast_dim_only(x0,y0,z0,t0,property, selector)
+            selector=flatten_da(selector)
+            self.selector=DataArraySelector(selector)
+
         #TODO: Maybe, we can use numpy from here on, since flattened, the multidimensional capabilities of xarray are not necessary
         main_arrays={'x0': x0, 'y0': y0, 'z0': z0, 't0': t0, 'property': property}
         main_arrays={k:flatten_da(v) for k,v in main_arrays.items()}
-        select_arrays= [flatten_da(da) for da in select_arrays]
         ds=xr.Dataset(main_arrays)
         if remove_nans:
-            valid=np.logical_and.reduce([da.notnull() for da in ds.data_vars.values()]+[da.notnull() for da in select_arrays])
+            valid=np.logical_and.reduce([da.notnull() for da in ds.data_vars.values()])
             ds=ds.isel(n=valid)
-            select_arrays=[da.isel(n=valid) for da in select_arrays]
-        field_selectors=dict(zip(select_keys, select_arrays))
         self.ds=ds
-        self.field_selectors=field_selectors
 
     
     @classmethod
-    def from_field_collection(cls, field_coll: Field_Collection, field_selectors: Dict[str, xr.DataArray]={}):
-        return cls(field_coll.f.x, field_coll.f.y, field_coll.f.z, field_coll.f.t, property=field_coll.f, field_selectors=field_selectors)
+    def from_field_collection(cls, field_coll: Field_Collection, selector=None):
+        return cls(field_coll.f.x, field_coll.f.y, field_coll.f.z, field_coll.f.t, property=field_coll.f, selector=selector)
     
     def to_path_collection(self):
         """Convert the particle collection to a path collection with only the initial positions"""
@@ -242,7 +286,11 @@ class Trajectory_Collection(object):
         da_y0=xr.DataArray(da_y0, coords=[('y0',da_y0)])
         da_z0=xr.DataArray(da_z0, coords=[('z0',da_z0)])
         da_t0=xr.DataArray(da_t0, coords=[('t0', da_t0)])
-        X,Y,Z,t=advector.advect(flowfield, da_x0, da_y0, da_z0, da_t0) #result: [x0, y0, z0, it]
+        n=xr.zeros_like(da_x0)
+        s0=flowfield.ds.s
+        n,_=broadcast_dim_only(n,s0)
+        selector=FunctionSelector(lambda x,y,z,t,n: s0.broadcast_like(x))
+        X,Y,Z,t=advector.advect(flowfield, da_x0, da_y0, da_z0, da_t0,n, selector=selector) #result: [x0, y0, z0, t0, s, it]
         # calculate relative displacements
         dx=X - da_x0
         dy=Y - da_y0
@@ -278,34 +326,37 @@ class Path_Collection(object):
             it_selector={'it': it}
         else:
             it_selector={}
+        field_selector=particle_coll.selector.get_field_selector(particle_coll.ds.x0, particle_coll.ds.y0, particle_coll.ds.z0, particle_coll.ds.t0, particle_coll.ds.n) #We choose the field purely based on the initial time. "Evovling" particles are not supported in combination with trajectories.
         if matching == 'exact':
-            selector=particle_coll.field_selectors | {'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0}
+            selector={'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0} | field_selector
             rel_paths=rel_traj_coll.ds.sel(selector)
         elif matching == 'nearest':
-            selector=particle_coll.field_selectors | {'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0}
+            selector={'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0} | field_selector
             rel_paths=rel_traj_coll.ds.sel(selector, method='nearest')
         elif matching == 'interpolate':
-            selector=particle_coll.field_selectors | {'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0} | it_selector
+            selector={'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0} | field_selector | it_selector
             rel_paths=rel_traj_coll.ds.interp(selector, kwargs={'fill_value': None})
+        # Problem: These hybrid selections can produce very large intermediate arrays, if len 1 dims are first blown up before the second selection reduces the size again.
+        # Therefore: First select along len>1 dimensions, then select nearest along len=1 dimensions.
         elif matching == 'nearest_exact':
             #len=1 dimensions are selected nearest, since the flowfield is likely symmetric in these dimensions
-            len1_dims=[d for d in rel_traj_coll.ds.dims if rel_traj_coll.ds[d].size==1]
-            lenn_dims=[d for d in rel_traj_coll.ds.dims if rel_traj_coll.ds[d].size>1]
+            len1_dims=[d for d in ['x0','y0','z0','t0'] if rel_traj_coll.ds[d].size==1]
+            lenn_dims=[d for d in ['x0','y0','z0','t0'] if rel_traj_coll.ds[d].size>1]
             nearest_selector={d:particle_coll.ds[d] for d in len1_dims}
-            exact_selectors=particle_coll.field_selectors | {d:particle_coll.ds[d] for d in lenn_dims}
-            rel_paths=rel_traj_coll.ds.sel(exact_selectors).squeeze(drop=True).sel(nearest_selector, method='nearest')
+            exact_selectors={d:particle_coll.ds[d] for d in lenn_dims} | field_selector
+            rel_paths=rel_traj_coll.ds.sel(exact_selectors).sel(nearest_selector, method='nearest')
         elif matching == 'nearest_interpolate':
-            #len=1 dimensions are selected nearest, field selectors are chosen exact, others are interpolated
-            len1_dims=[d for d in rel_traj_coll.ds.dims if rel_traj_coll.ds[d].size==1]
-            lenn_dims=[d for d in rel_traj_coll.ds.dims if rel_traj_coll.ds[d].size>1]
+            #len=1 dimensions are selected nearest, others are interpolated
+            len1_dims=[d for d in ['x0','y0','z0','t0'] if rel_traj_coll.ds[d].size==1]
+            lenn_dims=[d for d in ['x0','y0','z0','t0'] if rel_traj_coll.ds[d].size>1]
             nearest_selector={d:particle_coll.ds[d] for d in len1_dims}
-            interp_selectors={d:particle_coll.ds[d] for d in lenn_dims} | it_selector
-            exact_selectors=particle_coll.field_selectors
-            rel_paths=rel_traj_coll.ds.sel(exact_selectors).squeeze(drop=True).sel(nearest_selector, method='nearest').squeeze(drop=True).interp(interp_selectors)
+            interp_selectors={d:particle_coll.ds[d] for d in lenn_dims} | it_selector | field_selector
+            # exact_selectors= field_selector
+            rel_paths=rel_traj_coll.ds.interp(interp_selectors).sel(nearest_selector, method='nearest')
         else:
             raise KeyError(f"Matching '{matching}' not available.")
 
-        rel_paths=rel_paths.drop_vars(['x0', 'y0', 'z0', 't0'], errors='ignore')
+        rel_paths=rel_paths.drop_vars(['x0', 'y0', 'z0', 't0'], errors='ignore').squeeze(drop=True) 
         abs_paths=xr.Dataset({
             'x': rel_paths.dx + particle_coll.ds.x0,
             'y': rel_paths.dy + particle_coll.ds.y0,
@@ -319,7 +370,7 @@ class Path_Collection(object):
         """Create a path collection from initial particle positions and a field collection.
             In this case, the fields can be time dependent and the paths are calculated explicitly for each particle. For stationary fields, it is usually more efficient to calculate trajectories first and then create the path collection from the trajectory collection.
         """
-        X,Y,Z,T=advector.advect(field_coll, particle_coll.ds.x0, particle_coll.ds.y0, particle_coll.ds.z0, particle_coll.ds.t0)
+        X,Y,Z,T=advector.advect(field_coll, particle_coll.ds.x0, particle_coll.ds.y0, particle_coll.ds.z0, particle_coll.ds.t0, particle_coll.ds.n, particle_coll.selector)
         ds=xr.Dataset({'x': X, 'y': Y, 'z': Z, 't': T})
         return cls(ds)
 
@@ -328,12 +379,12 @@ class Path_Collection(object):
 
 
 
-    @classmethod
-    def from_doppler_birdbath_collection(cls,bb_coll: Birdbath_Collection, traj_coll: Trajectory_Collection, t:xr.DataArray=None):
-        part_coll=Particle_Collection.from_doppler_birdbath_collection(bb_coll)
-        if t is None:
-            t=bb_coll.moment.t
-        return cls.from_trajectory_collection(part_coll, traj_coll,t)
+    # @classmethod
+    # def from_doppler_birdbath_collection(cls,bb_coll: Birdbath_Collection, traj_coll: Trajectory_Collection, t:xr.DataArray=None):
+    #     part_coll=Particle_Collection.from_doppler_birdbath_collection(bb_coll)
+    #     if t is None:
+    #         t=bb_coll.moment.t
+    #     return cls.from_trajectory_collection(part_coll, traj_coll,t)
     
     def get_valid_mask(self):
         valid=self.ds.x.notnull() #it is enough to check x, since by construction we equalize nans between x,y,z
