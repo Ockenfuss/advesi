@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Dict
 import numpy as np
 import xarray as xr
-from advesi.helpers import sort_da
+from advesi.helpers import sort_da, interp_multi
 
 FIELD_BOUNDARY=1e10
 
@@ -389,18 +389,33 @@ class Path_Collection(object):
     def get_valid_mask(self):
         valid=self.ds.x.notnull() #it is enough to check x, since by construction we equalize nans between x,y,z
         return valid
+    
+    def _sel_nearest(self, var:str, dim:str, value, tolerance=None):
+        """Select the nearest value along a given dimension."""
+        if var not in {'x', 'y', 'z', 't'}:
+            raise KeyError(f"Variable '{var}' must be one of 'x', 'y', 'z', 't'.")
+        if dim not in {'n', 'it'}:
+            raise KeyError(f"Dimension '{dim}' must be one of 'n', 'it'.")
+        nearest_idx=abs(self.ds[var]-value).argmin(dim)
+        result=self.ds.isel({dim: nearest_idx})
+        if tolerance is not None:
+            valid=abs(self.ds[var]-value).min(dim)<=tolerance
+            result=result.where(valid)
+        return result
 
     def sel_nearest_time(self, time, tolerance=None):
         """For every particle, choose the nearest time step in the dataset.
         This is useful, since paths are stored in format (n, it), so selecting an absolute time is not straigtforward.
         """
         #maybe, in the future this can be acomplisehd with NDPointIndex, but currently, the tolerance is not supported for sel() calls with this index.
-        nearest_it=abs(self.ds.t-time).argmin('it')
-        result=self.ds.isel(it=nearest_it)
-        if tolerance is not None:
-            valid=abs(self.ds.t-time).min('it')<=tolerance
-            result=result.where(valid)
+        result=self._sel_nearest('t', 'it', time, tolerance)
         return result
+    
+    def interp_to_time(self, time):
+        """Like sel_nearest_time, but interpolate to the given time instead of selecting the nearest time step."""
+        interpolation=interp_multi(self.ds, 't', 'it', time)
+        return interpolation
+
 
 
 class Field_Collection(object):
