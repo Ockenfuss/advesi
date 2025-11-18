@@ -44,20 +44,27 @@ class DimensionError(Exception):
 
 
 class FlowField_Collection(object):
-    def __init__(self, u,v,w):
+    def __init__(self, u,v,w, extend='infinite'):
         u=xr.DataArray(u).astype(float).squeeze(drop=True) #remove 1D dimensions and add them as -Boundary to +Boundary again
         v=xr.DataArray(v).astype(float).squeeze(drop=True)
         w=xr.DataArray(w).astype(float).squeeze(drop=True)
+        flowdims={'x','y','z','t','s'}
         for da in [u,v,w]:
-            for d in ['u', 'v', 'w']:
-                if d in da.dims:
-                    raise DimensionError(f"FlowField_Collection is not allowed to have a '{d}' dimension, since this name will be used for the variable '{d}' in the internal dataset.")
-            if not set(da.dims).issubset({'x', 'y', 'z', 't', 's'}):
+            if not set(da.dims).issubset(flowdims):
                 raise DimensionError(f"FlowField_Collection is not allowed to have dimensions {da.dims}, only 'x', 'y', 'z', 't', 's' are allowed.")
         u,v,w=broadcast_dim_only(u,v,w)
         u=self._add_missing_dimensions(u)
         v=self._add_missing_dimensions(v)
         w=self._add_missing_dimensions(w)
+        # sort all dimensions
+        for dim in flowdims:
+            u=u.sortby(dim)
+            v=v.sortby(dim)
+            w=w.sortby(dim)
+        if extend=='infinite':
+            u=self._extend_dimension(u)
+            v=self._extend_dimension(v)
+            w=self._extend_dimension(w)
         self.ds= xr.Dataset({'u': u, 'v': v, 'w': w})
 
     @classmethod
@@ -106,17 +113,30 @@ class FlowField_Collection(object):
                 da=da.broadcast_like(coord)
         return da
     
-    def _get_nearest(self, x, y, z, t, s_kwarg):
-        return self.ds.sel(x=x, y=y, z=z, t=t, **s_kwarg, method='nearest').drop_vars(["x","y","z", "t", "s"])
+    def _extend_dimension(self, da: xr.DataArray):
+        """Extend the given DataArray in all dimensions to -advesi.FIELD_BOUNDARY and advesi.FIELD_BOUNDARY if not already present."""
+        for d in ["x", "y","z", "t", "s"]:
+            if da[d].isel({d:0}).values>-FIELD_BOUNDARY:
+                lower=da.isel({d:[0]})
+                lower.coords[d]=(d, [-1e10])
+                da=xr.concat([lower, da], dim=d)
+            if da[d].isel({d:-1}).values<FIELD_BOUNDARY:
+                upper=da.isel({d:[-1]})
+                upper.coords[d]=(d, [1e10])
+                da=xr.concat([da, upper], dim=d)
+        return da
     
-    def _get_interp(self, x, y, z, t, s_kwarg):
-        return self.ds.interp(x=x, y=y, z=z, t=t, **s_kwarg, kwargs={'fill_value':None}).drop_vars(["x","y","z", "t", "s"])
+    def _get_nearest(self, x, y, z, t, s):
+        return self.ds.sel(x=x, y=y, z=z, t=t, s=s, method='nearest').drop_vars(["x","y","z", "t", "s"])
+    
+    def _get_interp(self, x, y, z, t, s):
+        return self.ds.interp(x=x, y=y, z=z, t=t, s=s, kwargs={'fill_value':None}).drop_vars(["x","y","z", "t", "s"])
 
-    def get_values(self, x, y, z, t,s_kwarg, method='nearest'):
+    def get_values(self, x, y, z, t,s, method='nearest'):
         if method=='nearest':
-            return self._get_nearest(x, y, z, t, s_kwarg)
+            return self._get_nearest(x, y, z, t, s)
         elif method=='interpolate':
-            return self._get_interp(x, y, z, t, s_kwarg)
+            return self._get_interp(x, y, z, t, s)
         else:
             raise KeyError(f"Method '{method}' not available. Use 'nearest' or 'interpolate'.")
     
@@ -132,7 +152,7 @@ class FunctionSelector(FieldSelector):
     def __init__(self, s_func):
         self.s_func=s_func
     def get_field_selector(self, x, y, z, t, n):
-            return {'s': self.s_func(x,y,z,t,n)}
+            return self.s_func(x,y,z,t,n)
 
 class DataArraySelector(FieldSelector):
     def __init__(self, selector: xr.DataArray):
@@ -140,7 +160,7 @@ class DataArraySelector(FieldSelector):
             raise TypeError("Selector must be an xarray DataArray.")
         self.selector=selector
     def get_field_selector(self, x, y, z, t, n):
-        return {'s': self.selector.sel(n=n)}
+        return self.selector.sel(n=n)
 
 
 
@@ -197,7 +217,7 @@ class EulerAdvector(Advector):
                 # Z[{"it":save_it}]=Zc
                 # T[{"it":save_it}]=Tc
                 for intermediate_it in range(intermediate_interval):
-                    ds= flowfield.get_values(Xc, Yc, Zc, Tc, s_kwarg=selector.get_field_selector(Xc,Yc,Zc,Tc,n), method=self.interp_method)
+                    ds= flowfield.get_values(Xc, Yc, Zc, Tc, s=selector.get_field_selector(Xc,Yc,Zc,Tc,n), method=self.interp_method)
                     Xc=Xc+ds.u*dt
                     Yc=Yc+ds.v*dt
                     Zc=Zc+ds.w*dt
@@ -327,6 +347,7 @@ class Path_Collection(object):
         else:
             it_selector={}
         field_selector=particle_coll.selector.get_field_selector(particle_coll.ds.x0, particle_coll.ds.y0, particle_coll.ds.z0, particle_coll.ds.t0, particle_coll.ds.n) #We choose the field purely based on the initial time. "Evovling" particles are not supported in combination with trajectories.
+        field_selector={'s': field_selector}
         if matching == 'exact':
             selector={'x0': particle_coll.ds.x0, 'y0': particle_coll.ds.y0, 'z0': particle_coll.ds.z0, 't0': particle_coll.ds.t0} | field_selector
             rel_paths=rel_traj_coll.ds.sel(selector)
