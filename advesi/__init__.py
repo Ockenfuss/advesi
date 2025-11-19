@@ -432,10 +432,36 @@ class Path_Collection(object):
         result=self._sel_nearest('t', 'it', time, tolerance)
         return result
     
+    def _interp_to_position(self, direction, position, check_sorted=False):
+        """Interpolate the paths to the given position in the given direction.
+
+        Parameters
+        ----------
+        direction : str
+            Direction to interpolate to. Must be one of 'x', 'y', 'z', 't'.
+        position : float
+            Position in the given direction to interpolate to.
+
+        Returns
+        -------
+        xr.Dataset
+            Dataset with variables x,y,z,t at the interpolated positions.
+        """
+        if direction not in {'x', 'y', 'z', 't'}:
+            raise KeyError(f"Direction '{direction}' must be one of 'x', 'y', 'z', 't'.")
+        if check_sorted:
+            diff=self.ds[direction].diff('it')
+            if (diff<0).any():
+                raise ValueError(f"Path collection is not sorted along direction '{direction}' in increasing order. Cannot interpolate.")
+        interpolation=interp_multi(self.ds, direction, 'it', position)
+        return interpolation
+
+    def interp_to_xyz(self, direction, position, check_sorted=True):
+        return self._interp_to_position(direction, position, check_sorted)
+    
     def interp_to_time(self, time):
         """Like sel_nearest_time, but interpolate to the given time instead of selecting the nearest time step."""
-        interpolation=interp_multi(self.ds, 't', 'it', time)
-        return interpolation
+        return self._interp_to_position('t', time, check_sorted=False)
 
 
 
