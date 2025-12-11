@@ -6,6 +6,11 @@ When working with radar data, especially time-height displays ("Birdbath Scans")
 
 Advesi is a module to answer such questions. It is based on a lagrangian perspective, solving the advection equation for a collection of particles in a static velocity field, using a simple discrete integration. Thereby, advesi provides functions to create a collection of particles from radar images as well as to return a simulated radar image form particle collections. Internally, advesi is using numpy or xarray operations almost everywhere, making it very fast even for large arrays/particle collections.
 
+<div align="center">
+  <img src="examples/Marshal1953_example.png" alt="Example similar to Marshall, 1953" width="600" height="auto">
+  <p><em>Example similar to Marshall, 1953: A cell at 4 km height is constantly creating particles into a sheared field, while being advected with the background wind. See the corresponding example in the examples folder on how to simulate this plot.</em></p>
+</div>
+
 ## Terminology
 The following represents the core concepts of advesi:
 * A `flowfield` is a 3D vector field in 3D space, representing the wind which transports the particles. Currently, flowfields must be static fields, i.e. without time dependence. A `Flowfield_Collection` object contains a collection of flowfields.
@@ -13,11 +18,11 @@ The following represents the core concepts of advesi:
 * A `trajectory` is a 3D path in space, starting at a specific initial position and following the streamlines of the flowfield. A `Trajectory_Collection` can store multiple trajectories, e.g. for different initial positions.
 * A `path` is like a trajectory, but with an absolute time reference. A `Path_Collection` is a collection of paths, usually one path for every particle in a Particle_Collection.
 * A `field` is a scalar field in 3D space. Multiple field, for example at different times, can be stored in a `Field_Collection`.
-* A `birdbath scan` is a special field with high resolution in time and just one cell in x and y direction. This is what is measured by a vertically looking radar or lidar.
+* A `birdbath scan` or `birdbath view` is just a special field with high resolution in time and just one cell in x and y direction. This is what is measured by a vertically looking radar or lidar.
 
 Two comments to this structure:
 
-* **Trajectory vs Path**: The distinction between path and trajectory is useful for performance reasons: In a static field, the trajectory of a particle at a given starting position is always the same, regardless of time. Therefore, the expensive integration of the trajectory has to be done only once. Afterwards, this trajectory can be applied to every particle at the starting position, regardless of the absolute time.
+* **Trajectory vs Path**: The distinction between path and trajectory is useful for performance reasons: In a field with some symmetries, e.g. homogeneity in space or time, the trajectory of particles at multiple starting positions is the same. Therefore, the expensive integration of the trajectory has to be done only once. Subsequently, this trajectory can be applied to multiple particles.
 * **Fall Speed**: A particle has no separate fall speed associated with it. Instead, a lighter particle 'sees' a different velocity field than a heavier one. Therefore, every particle has a general `field_selector` property, which connect each particle to a certain flowfield in a Field_Collection.
 
 ## Usage
@@ -67,3 +72,13 @@ Internally, the data is structured as follows:
 - Trajectory_Collection: `ds:dx,dy,dz,dt` with dimensions `x0,y0,z0,t0,s,it`
 - Path_Collection: `ds:x,y,z,t` with dimensions `n,it`
 - Field_Collection: `ds:f` with dimensions `x,y,z,t`
+
+## Contributing
+```bash
+git clone "tbd"
+cd advesi
+pip install -e ".[dev]"
+```
+
+## References
+- Marshall, J. S. (1953). Precipitation Trajectories and Patterns. *Journal of Atmospheric Sciences*, 10(1), 25–29.
