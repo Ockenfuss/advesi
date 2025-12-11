@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "advesi"
+version = "0.0.1"
+description = "A python module for particle advection"
+readme = "README.md"
+authors = [
+    {name = "Paul Ockenfuß", email = "paul.ockenfuss@physik.uni-muenchen.de"},
+]
+license = {text = "CC-BY-SA-4.0"}
+classifiers = [
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+keywords = ["advection", "lagrange", "velocity field", "atmosphere", "radar", "cloud", "weather"]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20",
+    "xarray",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "jupyter",
+    # "pytest-cov",
+    # "black",
+    # "flake8",
+    # "mypy",
+]
+
+[project.urls]
+Homepage = "https://github.com/Ockenfuss/adevsi"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["advesi*"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+# [tool.black]
+# line-length = 88
+# target-version = ['py38']
+
+# [tool.mypy]
+# python_version = "3.8"
+# warn_return_any = true
+# warn_unused_configs = true
+# disallow_untyped_defs = true
