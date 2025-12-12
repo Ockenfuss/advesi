@@ -73,6 +73,11 @@ Internally, the data is structured as follows:
 - Path_Collection: `ds:x,y,z,t` with dimensions `n,it`
 - Field_Collection: `ds:f` with dimensions `x,y,z,t`
 
+### Selectors
+Fields have a selector dimension `s` with an arbitrary float coordinate. This coordinate value will be used to decide which field belongs to which particle. Therefore, every particle collection has a selector object. This selector object generates an `s` value for each particle. The resulting `s` values are then used to select the field. For the field selection along `s`, the same method is used as along all other dimensions `x,y,z,t`. This can be e.g. nearest neighbour selection or interpolation. If the `s` dimension is not present when creating the field, it is added with a default value of `s=1.0`. No extension to +-inf is performed for `s` (in contrast to `x,y,z,t`).
+
+For the particle collections, we can either provide an array, which specifies `s` directly for each particle, or a function. The function will be provided the values `x,y,z,t,n` of the particle and must return a selector value `s`. This way, for example custom time-evolving properties of the particle can be simulated, which lead to different 3D motion. If nothing is specified, a default selector value of `s=1.0` will be generated for all particles.
+
 ## Contributing
 ```bash
 git clone "tbd"

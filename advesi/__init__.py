@@ -115,14 +115,14 @@ class FlowField_Collection(object):
     
     def _extend_dimension(self, da: xr.DataArray):
         """Extend the given DataArray in all dimensions to -advesi.FIELD_BOUNDARY and advesi.FIELD_BOUNDARY if not already present."""
-        for d in ["x", "y","z", "t", "s"]:
+        for d in ["x", "y","z", "t"]:
             if da[d].isel({d:0}).values>-FIELD_BOUNDARY:
                 lower=da.isel({d:[0]})
-                lower.coords[d]=(d, [-1e10])
+                lower.coords[d]=(d, [-FIELD_BOUNDARY])
                 da=xr.concat([lower, da], dim=d)
             if da[d].isel({d:-1}).values<FIELD_BOUNDARY:
                 upper=da.isel({d:[-1]})
-                upper.coords[d]=(d, [1e10])
+                upper.coords[d]=(d, [FIELD_BOUNDARY])
                 da=xr.concat([da, upper], dim=d)
         return da
     
@@ -265,6 +265,7 @@ class Particle_Collection(object):
         if remove_nans:
             valid=np.logical_and.reduce([da.notnull() for da in ds.data_vars.values()])
             ds=ds.isel(n=valid)
+            # ds.coords['n']=('n', np.arange(len(ds.n))) #assign new, linear coordinates
         self.ds=ds
 
     
@@ -575,7 +576,7 @@ class Field_Collection(object):
         #set all positions outside of the field to invalid values
         id=self._get_id(path_coll.ds)
         if remove_duplicates:
-            #idea: sort ids in id[n,it] along it. Then, make sure that every cell id occurs at most once. This can be achieved by a diff on the sorted ids, then setting al ids with a diff of 0 to -1.
+            #idea: sort ids in id[n,it] along it. Then, make sure that every cell id occurs at most once. This can be achieved by a diff on the sorted ids, then setting all ids with a diff of 0 to -1.
             id=sort_da(id, dim='it')
             id.coords['it']=np.arange(len(id.it)) 
             diffs=id.diff('it', label='upper') #with upper, we will keep the first id

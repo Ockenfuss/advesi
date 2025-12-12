@@ -3,7 +3,7 @@
 ## Tests
 - Run all tests!
 ```bash
-# activate your test environment, e.g. . advesi_dev/bin/activate
+# activate your test environment, e.g. mamba activate advesi
 pytest "test/"
 ```
 
