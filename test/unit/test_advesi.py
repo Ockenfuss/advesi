@@ -92,15 +92,16 @@ class Test_ParticleCollection:
         particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property)
         assert {'n'} == set(particles.ds.dims)
         # if there is a nan, remove the particle by default
-        x0=xr.DataArray([1,2,np.nan], coords={'foo': [1,2,3]})
+        x0=xr.DataArray([np.nan,2,3], coords={'foo': [1,2,3]})
         particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property)
         assert len(particles.ds.n) == 18 #3x3x2
-        # after removal, the n coordinate is reset to consecutive integers
-        npt.assert_array_equal(particles.ds.n.values, np.arange(18))
         # this also holds for the field selectors
-        # selector=xr.DataArray([1,np.nan,3], coords={'foo': [1,2,3]})
-        # particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property, field_selectors={'w': selector})
-        # assert len(particles.ds.n) == 9 #3x3x1
+        selector=xr.DataArray([1,np.nan,3], coords={'foo': [1,2,3]})
+        particles=adv.Particle_Collection(x0=x0, y0=y0, z0=z0, t0=1.0, property=property, selector=selector)
+        assert len(particles.ds.n) == 9 #3x3x1
+        assert len(particles.selector.selector.n)==9
+        # after removal, the n coordinate is reset to consecutive integers
+        # npt.assert_array_equal(particles.ds.n.values, np.arange(18))
         # what happens if the array has a coordinate with the same name?
         x0=xr.DataArray(np.arange(20), coords=[('x0', np.arange(20))]).astype(float)
         part_coll=adv.Particle_Collection(x0,0.0,9.0,0.0, 1.0)

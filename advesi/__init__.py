@@ -248,25 +248,30 @@ class Particle_Collection(object):
         t0=xr.DataArray(t0).astype(float)
         property=xr.DataArray(property).astype(float)
         x0,y0,z0,t0,property=broadcast_dim_only(x0,y0,z0,t0,property)
+        all_arrays={'x0': x0, 'y0': y0, 'z0': z0, 't0': t0, 'property': property}
         if callable(selector):
             self.selector=FunctionSelector(selector)
         else:
             if selector is None:
                 selector=xr.ones_like(x0)
             selector=xr.DataArray(selector).astype(float)
-            x0,y0,z0,t0,property,selector=broadcast_dim_only(x0,y0,z0,t0,property, selector)
-            selector=flatten_da(selector)
-            self.selector=DataArraySelector(selector)
-
-        #TODO: Maybe, we can use numpy from here on, since flattened, the multidimensional capabilities of xarray are not necessary
-        main_arrays={'x0': x0, 'y0': y0, 'z0': z0, 't0': t0, 'property': property}
-        main_arrays={k:flatten_da(v) for k,v in main_arrays.items()}
-        ds=xr.Dataset(main_arrays)
+            all_arrays['selector']=selector
+        
+        # broadcast all arrays to the same shape
+        broadcasted_arrays=broadcast_dim_only(*all_arrays.values())
+        for i, key in enumerate(all_arrays.keys()):
+            all_arrays[key]=broadcasted_arrays[i]
+        # flatten all arrays to 1D
+        all_arrays={k:flatten_da(v) for k,v in all_arrays.items()}
+        # remove nans if desired
         if remove_nans:
-            valid=np.logical_and.reduce([da.notnull() for da in ds.data_vars.values()])
-            ds=ds.isel(n=valid)
-            # ds.coords['n']=('n', np.arange(len(ds.n))) #assign new, linear coordinates
+            valid=np.logical_and.reduce([da.notnull() for da in all_arrays.values()])
+            all_arrays={k:v.isel(n=valid) for k,v in all_arrays.items()}
+        # create ds and optionally DataArraySelector
+        ds=xr.Dataset({k:all_arrays[k] for k in ['x0','y0','z0','t0','property']})
         self.ds=ds
+        if 'selector' in all_arrays:
+            self.selector=DataArraySelector(all_arrays['selector'])
 
     
     @classmethod
