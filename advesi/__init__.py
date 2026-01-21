@@ -166,24 +166,16 @@ class DataArraySelector(FieldSelector):
 
 class Advector(object):
     def __init__(self):
-        """Advector class to advect particles in a flow field."""
+        """Advector class to advect particles in a flow field. This solves the general advection equation dP/dt = F(P,t) where P is the particle position and F the flow field."""
         pass
 
-class EulerAdvector(Advector):
-    def __init__(self, dt, steps, steps_backward=0, savesteps=None, interp_method='interpolate'):
-        self.dt= dt
-        total_steps=steps+steps_backward
-        if savesteps is None:
-            savesteps=total_steps
-        if savesteps<2:
-            raise ValueError("savesteps must be at least 2")
-        if total_steps<savesteps:
-            raise ValueError("steps must be at least savesteps")
-        intermediate_interval=int(total_steps/savesteps)
-        self.steps_forward=int(steps/total_steps*savesteps)
-        self.steps_backward=int(steps_backward/total_steps*savesteps)
-        self.intermediate_interval=intermediate_interval
-        self.interp_method=interp_method
+    def _get_F(self, flowfield : FlowField_Collection, x, y, z, t, n, selector: FieldSelector):
+        ds= flowfield.get_values(x, y, z, t, s=selector.get_field_selector(x,y,z,t,n), method=self.interp_method)
+        return ds.u, ds.v, ds.w
+    
+    def _one_step(self, flowfield : FlowField_Collection, x, y, z, t,n, dt, selector: FieldSelector):
+        """Advect the particles one time step. Must return xnew, ynew, znew, tnew."""
+        pass
 
     def _forward(self, flowfield : FlowField_Collection, x0, y0, z0, t0,n, dt, save_steps, intermediate_interval, selector: FieldSelector):
             it=np.sign(save_steps)*np.arange(0, abs(save_steps))
@@ -217,11 +209,7 @@ class EulerAdvector(Advector):
                 # Z[{"it":save_it}]=Zc
                 # T[{"it":save_it}]=Tc
                 for intermediate_it in range(intermediate_interval):
-                    ds= flowfield.get_values(Xc, Yc, Zc, Tc, s=selector.get_field_selector(Xc,Yc,Zc,Tc,n), method=self.interp_method)
-                    Xc=Xc+ds.u*dt
-                    Yc=Yc+ds.v*dt
-                    Zc=Zc+ds.w*dt
-                    Tc=Tc+dt
+                    Xc,Yc,Zc,Tc=self._one_step(flowfield, Xc, Yc, Zc, Tc,n, dt, selector)
             X=xr.concat(Xc_list, dim=it)
             Y=xr.concat(Yc_list, dim=it)
             Z=xr.concat(Zc_list, dim=it)
@@ -237,6 +225,32 @@ class EulerAdvector(Advector):
                 Zf=xr.concat([Zb.drop_sel(it=0), Zf], dim='it').sortby('it')
                 Tf=xr.concat([Tb.drop_sel(it=0), Tf], dim='it').sortby('it')
             return Xf, Yf, Zf, Tf
+
+class EulerAdvector(Advector):
+    def __init__(self, dt, steps, steps_backward=0, savesteps=None, interp_method='interpolate'):
+        self.dt= dt
+        total_steps=steps+steps_backward
+        if savesteps is None:
+            savesteps=total_steps
+        if savesteps<2:
+            raise ValueError("savesteps must be at least 2")
+        if total_steps<savesteps:
+            raise ValueError("steps must be at least savesteps")
+        intermediate_interval=int(total_steps/savesteps)
+        self.steps_forward=int(steps/total_steps*savesteps)
+        self.steps_backward=int(steps_backward/total_steps*savesteps)
+        self.intermediate_interval=intermediate_interval
+        self.interp_method=interp_method
+    
+    def _one_step(self, flowfield, x, y, z, t, n, dt, selector):
+        u,v,w=self._get_F(flowfield, x, y, z, t, n, selector)
+        xnew=x+u*dt
+        ynew=y+v*dt
+        znew=z+w*dt
+        tnew=t+dt
+        return xnew, ynew, znew, tnew
+        
+
 
         
 
