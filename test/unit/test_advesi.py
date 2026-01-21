@@ -70,6 +70,66 @@ class Test_EulerAdvector:
         #after 0.2s, the particle should be at 0.6m
         assert x.sel(it=2).item() == pytest.approx(0.6)
         assert x.sel(it=-2).item() == pytest.approx(-0.6)
+class Test_RK4Advector:
+    def test_advection(self):
+        #steady 3 m/s flow
+        u=xr.DataArray([3.0, 3.0], coords=[('z', [0,1.0])]).astype(float)
+        ff=adv.FlowField_Collection(u, 0, 0)
+        advector=adv.RK4Advector(dt=0.1, steps=10, steps_backward=10, savesteps=None)
+        x0=xr.DataArray([0.0], coords=[('n', [0])])
+        y0=xr.DataArray([0.0], coords=[('n', [0])])
+        z0=xr.DataArray([0.0], coords=[('n', [0])])
+        t0=xr.DataArray([0.0], coords=[('n', [0])])
+        selector=adv.DataArraySelector(xr.ones_like(x0))
+        x,y,z,t=advector.advect(ff, x0=x0, y0=y0, z0=z0, t0=t0, n=x0.n, selector=selector)
+        #after 0.2s, the particle should be at 0.6m
+        assert x.sel(it=2).item() == pytest.approx(0.6)
+        assert x.sel(it=-2).item() == pytest.approx(-0.6)
+    
+    def test_accuracy_comparison(self):
+        """Test that RK4 is more accurate than Euler for the same timestep"""
+        # Use a simple velocity field: u = -y, v = x (rotation)
+        # Analytical solution is circular motion
+        y_coords = xr.DataArray([-1.0, 0.0, 1.0], coords=[('y', [-1.0, 0.0, 1.0])])
+        x_coords = xr.DataArray([-1.0, 0.0, 1.0], coords=[('x', [-1.0, 0.0, 1.0])])
+        u = -y_coords  # u = -y
+        v = x_coords   # v = x
+        ff = adv.FlowField_Collection(u, v, 0)
+        
+        # Starting at (1, 0), after time t, particle should be at (cos(t), sin(t))
+        x0 = xr.DataArray([1.0], coords=[('n', [0])])
+        y0 = xr.DataArray([0.0], coords=[('n', [0])])
+        z0 = xr.DataArray([0.0], coords=[('n', [0])])
+        t0 = xr.DataArray([0.0], coords=[('n', [0])])
+        selector = adv.DataArraySelector(xr.ones_like(x0))
+        
+        dt = 0.1
+        steps = 10  # total time = 1.0
+        
+        # Euler advection
+        euler_advector = adv.EulerAdvector(dt=dt, steps=steps, savesteps=None)
+        x_euler, y_euler, z_euler, t_euler = euler_advector.advect(ff, x0=x0, y0=y0, z0=z0, t0=t0, n=x0.n, selector=selector)
+        
+        # RK4 advection
+        rk4_advector = adv.RK4Advector(dt=dt, steps=steps, savesteps=None)
+        x_rk4, y_rk4, z_rk4, t_rk4 = rk4_advector.advect(ff, x0=x0, y0=y0, z0=z0, t0=t0, n=x0.n, selector=selector)
+        
+        # the time should be the same for both methods
+        assert t_euler.sel(it=9).item() == t_rk4.sel(it=9).item()
+
+        # Analytical solution
+        t_final= t_euler.sel(it=9).item()
+        x_analytical = np.cos(t_final)
+        y_analytical = np.sin(t_final)
+        
+        # RK4 should be more accurate than Euler
+        euler_error = np.sqrt((x_euler.sel(it=9).item() - x_analytical)**2 + 
+                             (y_euler.sel(it=9).item() - y_analytical)**2)
+        rk4_error = np.sqrt((x_rk4.sel(it=9).item() - x_analytical)**2 + 
+                           (y_rk4.sel(it=9).item() - y_analytical)**2)
+        # print(f"Euler error: {euler_error}, RK4 error: {rk4_error}")
+        
+        assert rk4_error < euler_error
 
 class Test_TrajectoryCollection:
     def test_backward(self):

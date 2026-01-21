@@ -4,7 +4,7 @@
 - Run all tests!
 ```bash
 # activate your test environment, e.g. mamba activate advesi
-pytest "test/"
+pytest -sv "test/" #-s: show print output -v: verbose
 ```
 
 - Check also the jupyter notebook tutorials

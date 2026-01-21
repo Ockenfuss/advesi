@@ -250,9 +250,55 @@ class EulerAdvector(Advector):
         tnew=t+dt
         return xnew, ynew, znew, tnew
         
-
-
+class RK4Advector(Advector):
+    def __init__(self, dt, steps, steps_backward=0, savesteps=None, interp_method='interpolate'):
+        self.dt = dt
+        total_steps = steps + steps_backward
+        if savesteps is None:
+            savesteps = total_steps
+        if savesteps < 2:
+            raise ValueError("savesteps must be at least 2")
+        if total_steps < savesteps:
+            raise ValueError("steps must be at least savesteps")
+        intermediate_interval = int(total_steps / savesteps)
+        self.steps_forward = int(steps / total_steps * savesteps)
+        self.steps_backward = int(steps_backward / total_steps * savesteps)
+        self.intermediate_interval = intermediate_interval
+        self.interp_method = interp_method
+    
+    def _one_step(self, flowfield, x, y, z, t, n, dt, selector):
+        # k1 = F(P, t)
+        u1, v1, w1 = self._get_F(flowfield, x, y, z, t, n, selector)
         
+        # k2 = F(P + 0.5*dt*k1, t + 0.5*dt)
+        x2 = x + 0.5 * dt * u1
+        y2 = y + 0.5 * dt * v1
+        z2 = z + 0.5 * dt * w1
+        t2 = t + 0.5 * dt
+        u2, v2, w2 = self._get_F(flowfield, x2, y2, z2, t2, n, selector)
+        
+        # k3 = F(P + 0.5*dt*k2, t + 0.5*dt)
+        x3 = x + 0.5 * dt * u2
+        y3 = y + 0.5 * dt * v2
+        z3 = z + 0.5 * dt * w2
+        t3 = t + 0.5 * dt
+        u3, v3, w3 = self._get_F(flowfield, x3, y3, z3, t3, n, selector)
+        
+        # k4 = F(P + dt*k3, t + dt)
+        x4 = x + dt * u3
+        y4 = y + dt * v3
+        z4 = z + dt * w3
+        t4 = t + dt
+        u4, v4, w4 = self._get_F(flowfield, x4, y4, z4, t4, n, selector)
+        
+        # P_new = P + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+        xnew = x + dt / 6.0 * (u1 + 2*u2 + 2*u3 + u4)
+        ynew = y + dt / 6.0 * (v1 + 2*v2 + 2*v3 + v4)
+        znew = z + dt / 6.0 * (w1 + 2*w2 + 2*w3 + w4)
+        tnew = t + dt
+        
+        return xnew, ynew, znew, tnew
+
 
 class Particle_Collection(object):
     def __init__(self, x0: float | xr.DataArray, y0: float | xr.DataArray, z0: float | xr.DataArray, t0: float | xr.DataArray, property: float | xr.DataArray, selector=None, remove_nans=True):
