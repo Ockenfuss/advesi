@@ -63,7 +63,8 @@ f=field.f.squeeze() #extract the underlying DataArray
 f.max('t').plot(x='x') #plot it
 ```
 
-For more examples, see the provided jupyter notebook.
+## Examples
+For examples, see the provided jupyter notebook.
 
 ## Data Structures
 Internally, the data is structured as follows:
