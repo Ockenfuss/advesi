@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "advesi"
-version = "0.0.1"
+version = "1.0.0"
 description = "A python module for particle advection"
 readme = "README.md"
 authors = [
@@ -36,7 +36,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Ockenfuss/adevsi"
+Homepage = "https://github.com/Ockenfuss/advesi"
 
 [tool.setuptools.packages.find]
 where = ["."]
